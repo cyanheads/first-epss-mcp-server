@@ -1,6 +1,6 @@
 # first-epss-mcp-server - Directory Structure
 
-Generated on: 2026-10-18 23:23:00
+Generated on: 2026-10-18 23:43:16
 
 ```text
 first-epss-mcp-server/
@@ -24,6 +24,7 @@ first-epss-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -179,6 +180,7 @@ first-epss-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
