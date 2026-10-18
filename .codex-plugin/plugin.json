@@ -1,0 +1,25 @@
+{
+  "name": "first-epss-mcp-server",
+  "version": "0.1.0",
+  "description": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/first-epss-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/first-epss-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "epss", "first", "cve", "vulnerability"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "first-epss-mcp-server",
+    "shortDescription": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+    "longDescription": "FIRST EPSS scores, historical exploitation probabilities, and vulnerability prioritization with caller-supplied CVSS severity via MCP. Supports stdio and Streamable HTTP.",
+    "developerName": "cyanheads",
+    "category": "security",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/first-epss-mcp-server",
+    "defaultPrompt": []
+  }
+}

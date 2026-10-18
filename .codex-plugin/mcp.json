@@ -1,0 +1,9 @@
+{
+  "first-epss-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/first-epss-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio"
+    }
+  }
+}
