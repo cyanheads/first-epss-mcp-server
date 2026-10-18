@@ -1,6 +1,6 @@
 {
   "name": "first-epss-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
   "author": {
     "name": "cyanheads",

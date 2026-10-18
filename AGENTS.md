@@ -2,7 +2,7 @@
 
 **Server:** first-epss-mcp-server
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 
