@@ -27,6 +27,6 @@
     "runtimes": { "node": ">=24.0.0" }
   },
   "tools_generated": true,
-  "prompts_generated": true,
+  "prompts_generated": false,
   "user_config": {}
 }
