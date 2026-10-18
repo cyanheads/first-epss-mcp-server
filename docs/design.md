@@ -101,6 +101,8 @@ Return `{ scores, filters, pagination: { offset, limit, examinedCount, returnedC
 - `nextOffset = upstream offset + examinedCount` when below `candidateTotal`; `hasMore` concerns candidates, not a promise of more exact-year matches. A filtered page can be empty with `hasMore: true`. Never advance by the number of retained matches.
 - Pin continuation to the returned score date: repeat filters and `limit`, pass `nextOffset` and that date. No automatic background pagination or persistent cursors. Reject an upstream empty page before candidate exhaustion as inconsistent, preventing stalled continuation.
 
+The truncation linter recognizes only top-level `truncated`/`totalCount` fields. `epss_query_threshold` uses its per-tool allowlist because nested `pagination` already carries candidate counts and continuation; a second top-level count would duplicate that contract and could imply an exact-year total.
+
 Collect provenance score dates from all examined candidates before local filtering, so an empty exact-year page still carries its snapshot date for continuation. An entirely empty upstream result has no invented score date and needs no continuation.
 
 Empty candidate result notice: “No CVEs matched these filters. Call epss_query_threshold with broader bounds or epss_list_reference with topic='coverage'.” Empty year-filtered page with continuation: “No exact-year matches occurred in this candidate page. Call epss_query_threshold with the same filters, returned score date, and nextOffset.” `days` is documented addition recency, not publication recency or an EPSS movement window.

@@ -1,21 +1,22 @@
 /**
- * @fileoverview Smoke coverage for every definition shipped by the scaffold.
+ * @fileoverview Registered FIRST EPSS definition surface.
  * @module tests/smoke/definitions.smoke.test
  */
+import { expect, it } from 'vitest';
+import { allToolDefinitions } from '@/mcp-server/tools/definitions/index.js';
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it } from 'vitest';
-import { echoTool } from '@/mcp-server/tools/definitions/echo.tool.js';
-
-describe('scaffold definition smoke test', () => {
-  it('executes and formats the shipped tool', async () => {
-    // `echoTool` declares an error contract, so its handler wants a context
-    // typed against it — passing `errors` narrows what `createMockContext` returns.
-    const ctx = createMockContext({ errors: echoTool.errors });
-    const toolResult = await echoTool.handler(echoTool.input.parse({ message: 'smoke' }), ctx);
-
-    expect(toolResult).toEqual({ message: 'smoke' });
-    expect(toolResult).toEqual(expect.schemaMatching(echoTool.output));
-    expect(echoTool.format?.(toolResult)).toEqual([{ type: 'text', text: 'smoke' }]);
-  });
+it('registers exactly five EPSS tools with structured and formatted output', () => {
+  expect(allToolDefinitions.map((definition) => definition.name)).toEqual([
+    'epss_get_scores',
+    'epss_get_timeseries',
+    'epss_query_threshold',
+    'epss_prioritize_cves',
+    'epss_list_reference',
+  ]);
+  for (const definition of allToolDefinitions) {
+    expect(definition.annotations?.readOnlyHint).toBe(true);
+    expect(typeof definition.handler).toBe('function');
+    expect(typeof definition.format).toBe('function');
+    expect(definition.output).toHaveProperty('parse');
+  }
 });
