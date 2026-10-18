@@ -43,7 +43,7 @@ for (const [address, prefix] of [
 async function publicHeaderUrl(url: URL, signal: AbortSignal): Promise<void> {
   if (
     url.origin !== 'https://epss.empiricalsecurity.com' ||
-    url.pathname !== '/epss_scores-current.csv.gz' ||
+    !/^\/epss_scores-(?:current|\d{4}-\d{2}-\d{2})\.csv\.gz$/.test(url.pathname) ||
     url.search ||
     url.username ||
     url.password

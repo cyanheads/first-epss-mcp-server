@@ -68,7 +68,10 @@ beforeEach(async () => {
         calls.push(url);
         return api(url, init);
       }
-      if (url.href === 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz') {
+      if (
+        url.href === 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz' ||
+        url.href === `https://epss.empiricalsecurity.com/epss_scores-${date}.csv.gz`
+      ) {
         headerCalls++;
         return metadata(init);
       }
@@ -286,10 +289,33 @@ describe('strict upstream parsing', () => {
     });
     expect(result.items[0]?.series.at(-1)?.date).toBe('2026-10-17');
   });
+  it('filters older valid observations when 30 samples span more than 30 calendar days', async () => {
+    const series = Array.from({ length: 32 }, (_, i) => i + 1)
+      .filter((days) => days !== 1 && days !== 20)
+      .map((days) => ({
+        date: domain.shiftDate(date, -days),
+        epss: String(days / 100),
+        percentile: '0.2',
+      }));
+    expect(series).toHaveLength(30);
+    api = (url) => envelope(url, [row(undefined, { 'time-series': series })]);
+    const result = await new domain.EpssService().getTimeseries(
+      { cves: ids(1) },
+      createMockContext(),
+    );
+    expect(result.items[0]?.series).toHaveLength(28);
+    expect(result.items[0]?.series[0]?.date).toBe('2026-09-18');
+    expect(result.items[0]?.series.at(-1)?.date).toBe('2026-10-16');
+    expect(result.items[0]?.series.map((score) => score.date)).not.toContain('2026-09-28');
+  });
   it.each([
     null,
     [{ date, epss: 0.2, percentile: 0.3 }],
-    [{ date: '2026-09-17', epss: 0.2, percentile: 0.3 }],
+    [
+      { date: '2026-09-17', epss: 0.2, percentile: 0.3 },
+      { date: '2026-09-17', epss: 0.4, percentile: 0.3 },
+    ],
+    [{ date: '2026-09-17', epss: '', percentile: 0.3 }],
     [
       { date: '2026-10-17', epss: 0.2, percentile: 0.3 },
       { date: '2026-10-17', epss: 0.4, percentile: 0.3 },
@@ -549,6 +575,29 @@ describe('bounded model metadata', () => {
       new domain.ModelHeaderCache().get(createMockContext(), new AbortController().signal),
     ).resolves.toMatchObject({ scoreDate: date });
     expect(headerCalls).toBe(2);
+  });
+  it('follows the current CSV redirect to its official dated filename', async () => {
+    metadata = () =>
+      headerCalls === 1
+        ? new Response(null, { status: 302, headers: { location: `epss_scores-${date}.csv.gz` } })
+        : new Response(gzipSync(header));
+    await expect(
+      new domain.ModelHeaderCache().get(createMockContext(), new AbortController().signal),
+    ).resolves.toEqual({ scoreDate: date, modelVersion: 'v2026.06.15' });
+    expect(headerCalls).toBe(2);
+  });
+  it.each([
+    'http://epss.empiricalsecurity.com/epss_scores-2026-10-18.csv.gz',
+    'https://test@epss.empiricalsecurity.com/epss_scores-2026-10-18.csv.gz',
+    '/epss_scores-2026-10-18.csv.gz?download=1',
+    '/unrelated.csv.gz',
+    '/epss_scores-2026-10-18.csv',
+  ])('rejects unrelated or unsafe dated redirect %s', async (location) => {
+    metadata = () => new Response(null, { status: 302, headers: { location } });
+    await expect(
+      new domain.ModelHeaderCache().get(createMockContext(), new AbortController().signal),
+    ).rejects.toThrow(/redirect/);
+    expect(headerCalls).toBe(1);
   });
   it('rejects an external redirect before another fetch', async () => {
     metadata = () =>

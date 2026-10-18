@@ -321,14 +321,9 @@ export class EpssService {
           const dates = new Set<string>();
           for (const sample of raw['time-series']) {
             const observation = normalizeScore(sample, current.cve);
-            if (
-              observation.date >= current.date ||
-              observation.date < shiftDate(current.date, -30) ||
-              dates.has(observation.date)
-            )
-              upstreamShape();
+            if (observation.date >= current.date || dates.has(observation.date)) upstreamShape();
             dates.add(observation.date);
-            series.push(observation);
+            if (observation.date >= shiftDate(current.date, -30)) series.push(observation);
           }
           series.sort((a, b) => a.date.localeCompare(b.date));
         }

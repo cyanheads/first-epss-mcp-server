@@ -132,6 +132,97 @@ afterEach(() => {
 });
 afterAll(() => disposeEpssService());
 
+describe('sparse history and official metadata redirect regressions', () => {
+  it('verifies current model provenance through the official dated CSV redirect', async () => {
+    const headerUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.origin === 'https://api.first.org' && url.pathname === '/data/v1/epss') {
+          calls.push(url);
+          return api(url);
+        }
+        if (url.href === 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz') {
+          headerUrls.push(url.href);
+          return new Response(null, {
+            status: 302,
+            headers: { location: 'epss_scores-2026-10-18.csv.gz' },
+          });
+        }
+        if (url.href === 'https://epss.empiricalsecurity.com/epss_scores-2026-10-18.csv.gz') {
+          headerUrls.push(url.href);
+          return new Response(
+            '#model_version:v2026.06.15,score_date:2026-10-18T12:00:00Z\ncve,epss,percentile\n',
+          );
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      }),
+    );
+    const result = await runToolContract(epssGetScores, { cves: [cve(0)] });
+    const value = success(result, epssGetScores.output);
+    expect(value.provenance.modelMetadata).toEqual({
+      status: 'verified',
+      sourceUrl: 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz',
+      scoreDate: date,
+      modelVersion: 'v2026.06.15',
+    });
+    expect(value.scores[0]).toMatchObject({
+      modelVersion: 'v2026.06.15',
+      modelVersionSource: 'csv_header',
+    });
+    expect(headerUrls).toEqual([
+      'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz',
+      'https://epss.empiricalsecurity.com/epss_scores-2026-10-18.csv.gz',
+    ]);
+    scoreParity(value.scores[0]!, text(result));
+    provenanceParity(value.provenance, text(result));
+    expect(text(result)).not.toContain('could not be verified');
+  });
+
+  it('retains the calendar window from thirty sparse preceding observations', async () => {
+    const observations = Array.from({ length: 32 }, (_, i) => ({
+      date: shiftDate(date, -i - 1),
+      epss: (i + 1) / 100,
+      percentile: 0.9,
+    })).filter((score) => !['2026-10-17', '2026-09-28'].includes(score.date));
+    expect(observations).toHaveLength(30);
+    api = (url) => envelope(url, [row(cve(0), { epss: 0.8, 'time-series': observations })]);
+    const result = await runToolContract(epssGetTimeseries, { cves: [cve(0)] });
+    const value = success(result, epssGetTimeseries.output);
+    const item = value.items[0]!;
+    const retained = observations
+      .filter((score) => score.date >= '2026-09-18')
+      .sort((a, b) => a.date.localeCompare(b.date));
+    expect(item.series).toHaveLength(28);
+    expect(
+      item.series.map(({ date: day, epss, percentile }) => ({ date: day, epss, percentile })),
+    ).toEqual(retained);
+    expect(item.requestedWindow).toEqual({ startDate: '2026-09-18', endDate: '2026-10-17' });
+    expect(item.observedWindow).toEqual({
+      startDate: '2026-09-18',
+      endDate: '2026-10-16',
+      observationCount: 28,
+    });
+    expect(item.missingDates).toEqual(['2026-09-28', '2026-10-17']);
+    expect(item.delta7d).toBe(0.8 - 0.07);
+    expect(item.delta30d).toBe(0.8 - 0.3);
+    expect(item.unavailableDeltas).toEqual([]);
+    expect(item.deltaComparisons).toEqual([
+      { days: 7, baselineDate: '2026-10-11', endpointDate: date, crossesModelBoundary: false },
+      { days: 30, baselineDate: '2026-09-18', endpointDate: date, crossesModelBoundary: false },
+    ]);
+    const rendered = text(result);
+    for (const score of [item.current, ...item.series]) scoreParity(score, rendered);
+    expect(rendered).not.toContain('2026-09-16');
+    expect(rendered).not.toContain('2026-09-17');
+    expect(rendered).toContain('Missing dates: 2026-09-28, 2026-10-17');
+    expect(rendered).toContain('observation count: 28');
+    expect(rendered).toContain(`delta7d: ${item.delta7d}; delta30d: ${item.delta30d}`);
+    provenanceParity(value.provenance, rendered);
+  });
+});
+
 describe('score lookup caller contract', () => {
   it('normalizes comma/newline input, deduplicates and distinguishes zero, invalid and absent', async () => {
     api = (url) => envelope(url, [row(cve(0), { epss: 0, percentile: 0 })]);
