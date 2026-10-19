@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "first-epss-mcp-server",
   "version": "0.1.1",
-  "description": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+  "description": "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -11,7 +11,7 @@
   "homepage": "https://github.com/cyanheads/first-epss-mcp-server#readme",
   "repository": "https://github.com/cyanheads/first-epss-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "typescript", "bun", "stdio", "streamable-http", "epss", "first", "cve", "vulnerability"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "typescript", "bun", "stdio", "streamable-http", "epss", "first", "cve", "cvss", "vulnerability", "vulnerability-management", "exploit-prediction", "security", "ai-agents", "ai-tools", "cyanheads"],
   "mcpServers": {
     "first-epss-mcp-server": {
       "command": "npx",

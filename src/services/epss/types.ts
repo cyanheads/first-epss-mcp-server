@@ -44,6 +44,7 @@ export interface BatchAccounting {
 }
 /** Score/history request. */
 export interface BatchInput {
+  batchOffset?: number;
   cves: readonly string[];
   date?: string;
 }
@@ -79,6 +80,8 @@ export interface ThresholdInput {
 /** One upstream candidate page. */
 export interface ThresholdResult {
   filters: ThresholdInput;
+  /** Original upstream candidate offsets for each retained exact-year match; never public output. */
+  matchOffsets: number[];
   notices: string[];
   pagination: {
     offset: number;
@@ -90,6 +93,8 @@ export interface ThresholdResult {
     totalRelation: 'exact' | 'unknown';
     hasMore: boolean;
     nextOffset?: number;
+    budgetLimited?: boolean;
+    withheldCount?: number;
   };
   provenance: Provenance;
   scores: Score[];

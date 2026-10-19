@@ -1,7 +1,7 @@
 {
   "name": "first-epss-mcp-server",
   "version": "0.1.1",
-  "description": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+  "description": "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -10,11 +10,11 @@
   "homepage": "https://github.com/cyanheads/first-epss-mcp-server#readme",
   "repository": "https://github.com/cyanheads/first-epss-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "typescript", "bun", "stdio", "streamable-http", "epss", "first", "cve", "vulnerability"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "typescript", "bun", "stdio", "streamable-http", "epss", "first", "cve", "cvss", "vulnerability", "vulnerability-management", "exploit-prediction", "security", "ai-agents", "ai-tools", "cyanheads"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "first-epss-mcp-server",
-    "shortDescription": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+    "shortDescription": "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP.",
     "longDescription": "Look up current or historical FIRST EPSS scores, inspect daily trajectories, and discover CVEs by probability, percentile, year, or dataset-addition recency. Combine forecasts with caller-supplied CVSS severity for configurable remediation tiers. Missing scores and severity remain unknown, with source dates and model attribution returned alongside results. The keyless integration supports stdio and Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "security",

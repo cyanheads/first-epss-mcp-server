@@ -24,8 +24,9 @@ Package/install identity is `@cyanheads/first-epss-mcp-server`; registry identit
 - **Secrets in env vars only** — never hardcoded.
 - **Cut noise.** No speculative abstractions, fallback facts, or guards for states already ruled out by validated schemas.
 - **Preserve unknowns.** Missing EPSS is not zero risk; missing CVSS is not low severity. Probability and percentile are different metrics. Model changes alone do not establish new vulnerability evidence.
-- **Preserve bounded work.** Scores/prioritization process 500 unique CVEs; history processes 50; the submission ceiling is 5,000 entries. Return every deferred identifier and its continuation guidance.
+- **Preserve bounded work.** Scores/prioritization process 500 unique CVEs; history processes 50; the submission ceiling is 5,000 entries. Batch tools bound each serialized caller surface to 65,536 UTF-8 bytes, retaining whole entries and explicit full counts/preview completeness. Resume with the original submission, returned date, original severity/policy and `nextBatchOffset` as `batchOffset`; already-processed withheld entries differ from never-queried deferrals.
 - **Close the loop on issues.** Follow the authorized workflow's issue-update and closure steps, describing the concrete change for future readers.
+- **Candidate byte continuation.** All four dynamic tools bound each serialized caller surface to 65,536 UTF-8 bytes. Threshold discovery retains whole matches in upstream candidate order, discloses budget cuts with nested `budgetLimited`/`withheldCount`, and resumes at the first withheld match's exact upstream candidate position. Preserve the actual `examinedCount`; an empty year-filtered page advances across every inspected candidate. Candidate-position metadata stays internal.
 
 ## Patterns
 
@@ -96,7 +97,7 @@ Do not change framework adoption, lower the release-age guard, add dependency ov
 
 ## Testing and verification
 
-Automated tests make no live upstream requests. Install strict global fetch fakes below the real framework fetch helper; do not mock `EpssService` public methods. Exercise handlers with `createMockContext()` and check structured/text parity, sparse payloads, missing/deferred CVEs, calendar gaps, candidate continuation, cancellation, retries, and model attribution.
+Automated tests make no live upstream requests. Install strict global fetch fakes below the real native API exchange and framework metadata fetch helper; do not mock `EpssService` public methods. Exercise handlers with `createMockContext()` and check structured/text parity, sparse payloads, missing/deferred CVEs, calendar gaps, candidate continuation, cancellation, retries, and model attribution. API error bodies are inspected privately and never logged; preserve one attempt deadline across headers and body reads.
 
 Run raw `bun run devcheck`, `bun run rebuild`, and `bun run test` before handback. Read warnings as well as exit codes. Verification runs locally. `.github/workflows/codeql.yml` is the only GitHub Actions workflow; do not add duplicate local-gate workflows.
 

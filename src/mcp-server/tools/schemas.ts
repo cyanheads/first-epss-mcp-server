@@ -7,29 +7,44 @@ import { FIRST_SCORE_DATE, isCalendarDate } from '../../services/epss/index.js';
 
 /** Finite unit-interval value. */
 export const probabilitySchema = z.number().min(0).max(1);
+/** Offset into the original first-occurrence normalized unique submission. */
+export const batchOffsetSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER)
+  .default(0)
+  .describe(
+    'Resume in first-occurrence normalized unique input order; resubmit the original cves, returned score date and original policy/severity inputs.',
+  );
 /** Bounded submitted identifier; malformed CVEs are accounted for by the service. */
 export const cveSchema = z
   .string()
   .min(1)
   .max(128)
   .refine((value) => value.trim().length > 0, 'Supply a nonempty CVE identifier.')
-  .describe('Complete CVE-YYYY-NNNN identifier; whitespace and case are normalized.');
+  .describe(
+    'Complete CVE-YYYY-NNNN identifier; whitespace, case and Unicode dashes are normalized.',
+  );
 /** Batch input with domain-specific comma/newline normalization. */
 export const cvesSchema = z
   .preprocess(
     (value) =>
       typeof value === 'string'
         ? value
-            .split(/[,\n]/)
+            .split(/[\s,;]+/)
             .map((part) => part.trim())
             .filter(Boolean)
         : value,
     z.array(cveSchema).min(1).max(5000),
   )
-  .describe('One to 5000 CVE identifiers; comma/newline-delimited strings are also accepted.');
+  .describe(
+    'One to 5000 CVE identifiers; whitespace, comma or semicolon-delimited strings are also accepted.',
+  );
 /** Historical date, blank meaning latest available. */
 export const dateSchema = z
   .string()
+  .regex(/^\s*(?:\d{4}-\d{2}-\d{2}\s*)?$/)
   .refine(
     (value) =>
       !value.trim() ||
@@ -99,12 +114,63 @@ export const unscoredSchema = z
   .describe('Identifier with an explicitly unknown forecast.');
 /** Shared bounded-work accounting. */
 export const accountingShape = {
+  batchOffset: z
+    .number()
+    .int()
+    .optional()
+    .describe('Starting offset in the original normalized unique input.'),
+  nextBatchOffset: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      'Resume with this batchOffset and the original cves, returned date and original severity/policy inputs.',
+    ),
+  returnedCount: z
+    .number()
+    .int()
+    .optional()
+    .describe('Processed identifiers whose complete score, history or unscored entry is included.'),
+  withheldCount: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      'Processed identifiers withheld by the response byte budget; queried valid entries are included in processedCount.',
+    ),
+  withheldCves: z
+    .array(z.string().describe('Already processed identifier withheld from this response.'))
+    .optional()
+    .describe(
+      'Already processed identifiers withheld by the byte budget, in original input order; may be a preview.',
+    ),
+  withheldCvesComplete: z
+    .boolean()
+    .optional()
+    .describe('True when withheldCves includes every withheld identifier.'),
+  deferredCount: z
+    .number()
+    .int()
+    .optional()
+    .describe('Identifiers beyond this call workload cap, not queried.'),
+  deferredCvesComplete: z
+    .boolean()
+    .optional()
+    .describe('True when deferredCves includes every never-queried deferred identifier.'),
+  budgetLimited: z
+    .boolean()
+    .optional()
+    .describe(
+      'True when whole entries or accounting lists were shortened to fit the serialized response budget.',
+    ),
   unscoredCves: z
     .array(unscoredSchema)
-    .describe('Processed identifiers without scores, in request order.'),
+    .describe('Retained processed identifiers without scores, in request order.'),
   deferredCves: z
     .array(z.string().describe('Identifier not queried.'))
-    .describe('Identifiers beyond this call workload cap; submit them in another call.'),
+    .describe(
+      'Never-queried identifiers beyond this call workload cap; complete unless deferredCvesComplete is false. Resume using nextBatchOffset and the original submission.',
+    ),
   requestedCount: z.number().int().describe('Unique normalized identifiers submitted.'),
   processedCount: z
     .number()

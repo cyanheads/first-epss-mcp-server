@@ -2,7 +2,18 @@
  * @fileoverview Safe FIRST transport error projection and cancellation.
  * @module services/epss/errors
  */
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
+
+const trustedErrors = new WeakSet<McpError>();
+/** Mark only errors authored by this service as safe to retain verbatim. */
+export function trustedError(error: McpError): McpError {
+  trustedErrors.add(error);
+  return error;
+}
+/** Build a nonretryable local validation error. */
+export function localValidationError(...args: Parameters<typeof validationError>): McpError {
+  return trustedError(validationError(args[0], { ...args[1], retryable: false }));
+}
 /** Throw a classified cancellation/deadline without exposing the abort reason. */
 export function checkSignal(signal: AbortSignal): void {
   if (!signal.aborted) return;
@@ -46,6 +57,7 @@ export function safeError(error: unknown, endpoint: 'scores' | 'model_header'): 
         'pacer_shed',
         'retry_deadline_exceeded',
         'invalid_filter_combination',
+        'snapshot_unavailable',
       ].includes(String(error.data?.reason))
     )
       data.reason = error.data?.reason;
@@ -73,10 +85,16 @@ export function safeError(error: unknown, endpoint: 'scores' | 'model_header'): 
   if (data.reason === 'invalid_filter_combination')
     hint =
       "Call epss_list_reference with topic='coverage', then call epss_query_threshold with ordered bounds or a year/addition filter.";
+  if (data.reason === 'snapshot_unavailable')
+    hint = 'Call the same tool with another date or omit date for latest available data.';
   data.recovery = { hint };
-  return new McpError(
-    code,
-    `FIRST EPSS ${endpoint === 'scores' ? 'score request' : 'model metadata request'} failed.`,
-    data,
+  return trustedError(
+    new McpError(
+      code,
+      error instanceof McpError && trustedErrors.has(error)
+        ? error.message
+        : `FIRST EPSS ${endpoint === 'scores' ? 'score request' : 'model metadata request'} failed${typeof data.status === 'number' ? ` (HTTP ${data.status})` : ''}.`,
+      data,
+    ),
   );
 }

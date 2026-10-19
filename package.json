@@ -2,7 +2,7 @@
   "name": "@cyanheads/first-epss-mcp-server",
   "version": "0.1.1",
   "mcpName": "io.github.cyanheads/first-epss-mcp-server",
-  "description": "FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity.",
+  "description": "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "homepage": "https://github.com/cyanheads/first-epss-mcp-server#readme",
   "bugs": { "url": "https://github.com/cyanheads/first-epss-mcp-server/issues" },
@@ -62,7 +62,14 @@
     "epss",
     "first",
     "cve",
-    "vulnerability"
+    "cvss",
+    "vulnerability",
+    "vulnerability-management",
+    "exploit-prediction",
+    "security",
+    "ai-agents",
+    "ai-tools",
+    "cyanheads"
   ],
   "repository": {
     "type": "git",

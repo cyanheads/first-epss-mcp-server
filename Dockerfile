@@ -124,7 +124,7 @@ ENV NODE_ENV=production
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="first-epss-mcp-server"
-LABEL org.opencontainers.image.description="FIRST EPSS scores, score history, and CVE prioritization with caller-supplied severity."
+LABEL org.opencontainers.image.description="Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/first-epss-mcp-server"

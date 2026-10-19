@@ -2,7 +2,8 @@
  * @fileoverview Identifier, date, and score normalization for FIRST EPSS.
  * @module services/epss/normalization
  */
-import { serializationError, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { serializationError } from '@cyanheads/mcp-ts-core/errors';
+import { trustedError, localValidationError as validationError } from './errors.js';
 import type { BatchAccounting, Score } from './types.js';
 /** Earliest published score date. */
 export const FIRST_SCORE_DATE = '2021-04-14';
@@ -18,13 +19,15 @@ export const MODEL_TRANSITIONS = [
 ] as const;
 /** Reject invalid upstream shapes without leaking upstream content. */
 export function upstreamShape(): never {
-  throw serializationError('FIRST EPSS returned inconsistent or invalid score data.', {
-    reason: 'upstream_shape',
-    retryable: false,
-    recovery: {
-      hint: "Retry the same tool call once; if it persists, call epss_list_reference with topic='coverage' and do not interpret the response as missing scores.",
-    },
-  });
+  throw trustedError(
+    serializationError('FIRST EPSS returned inconsistent or invalid score data.', {
+      reason: 'upstream_shape',
+      retryable: false,
+      recovery: {
+        hint: "Retry the same tool call once; if it persists, call epss_list_reference with topic='coverage' and do not interpret the response as missing scores.",
+      },
+    }),
+  );
 }
 /** Match a real ISO date without rollover. */
 export function isCalendarDate(value: string): boolean {
@@ -52,7 +55,10 @@ export function shiftDate(date: string, days: number): string {
 }
 /** Normalize a CVE without repairing it. */
 export function normalizeCve(value: string): string {
-  return value.trim().toUpperCase();
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2010-\u2015\u2212\uFE63\uFF0D]/g, '-');
 }
 /** Recognize canonical identifiers. */
 export function isCve(value: string): boolean {
@@ -62,6 +68,7 @@ export function isCve(value: string): boolean {
 export function normalizeBatch(
   cves: readonly string[],
   cap: number,
+  offset = 0,
 ): BatchAccounting & { processedCves: string[]; validCves: string[] } {
   if (
     !cves.length ||
@@ -72,12 +79,14 @@ export function normalizeBatch(
       'Supply between 1 and 5000 nonempty CVE strings of at most 128 characters.',
     );
   const unique = [...new Set(cves.map(normalizeCve))];
-  const processedCves = unique.slice(0, cap);
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    throw validationError('Use a nonnegative safe integer batchOffset.');
+  const processedCves = unique.slice(offset, offset + cap);
   return {
     requestedCount: unique.length,
     processedCount: processedCves.length,
     duplicateCount: cves.length - unique.length,
-    deferredCves: unique.slice(cap),
+    deferredCves: unique.slice(offset + cap),
     processedCves,
     validCves: processedCves.filter(isCve),
     unscoredCves: processedCves

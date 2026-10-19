@@ -3,6 +3,7 @@
  * @module mcp-server/tools/history
  */
 import {
+  FIRST_SCORE_DATE,
   MODEL_SCHEDULE_VERIFIED_AT,
   MODEL_TRANSITIONS,
   type RawTimeseriesItem,
@@ -49,6 +50,9 @@ export function deriveHistory(item: RawTimeseriesItem) {
       startDate: shiftDate(current.date, -30),
       endDate: shiftDate(current.date, -1),
     },
+    ...(shiftDate(current.date, -31) >= FIRST_SCORE_DATE
+      ? { previousAnchorDate: shiftDate(current.date, -31) }
+      : {}),
     ...(first && last
       ? {
           observedWindow: {
@@ -59,8 +63,8 @@ export function deriveHistory(item: RawTimeseriesItem) {
         }
       : {}),
     missingDates: expected.filter((date) => !byDate.has(date)),
-    ...(seven ? { delta7d: current.epss - seven.epss } : {}),
-    ...(thirty ? { delta30d: current.epss - thirty.epss } : {}),
+    ...(seven ? { delta7d: Number((current.epss - seven.epss).toFixed(9)) } : {}),
+    ...(thirty ? { delta30d: Number((current.epss - thirty.epss).toFixed(9)) } : {}),
     unavailableDeltas: [7, 30].filter((days) => !byDate.has(shiftDate(current.date, -days))),
     deltaComparisons,
     peak: {

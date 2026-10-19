@@ -2,10 +2,16 @@
  * @fileoverview Inclusive FIRST EPSS discovery with candidate pagination.
  * @module mcp-server/tools/definitions/epss-query-threshold.tool
  */
-import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getEpssService } from '../../../services/epss/index.js';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, serializationError } from '@cyanheads/mcp-ts-core/errors';
+import { getEpssService, type ThresholdResult } from '../../../services/epss/index.js';
 import { provenanceText, scoresText } from '../format.js';
+import {
+  fittingPrefix,
+  measuredSurfaces,
+  RESPONSE_BUDGET_IN_BYTES,
+  serializedBytes,
+} from '../response-budget.js';
 import {
   dateSchema,
   noticeEnrichment,
@@ -27,9 +33,10 @@ const filterShape = {
     .number()
     .int()
     .min(1999)
-    .max(new Date().getUTCFullYear())
     .optional()
-    .describe('Exact year in the CVE identifier; candidate pages may contain no matches.'),
+    .describe(
+      'Exact CVE year from 1999 through the current UTC year; candidate pages may contain no matches.',
+    ),
   addedWithinDays: z
     .number()
     .int()
@@ -45,7 +52,7 @@ const filterShape = {
 /** Discover one candidate page; exact-year totals remain unknown. */
 export const epssQueryThreshold = tool('epss_query_threshold', {
   description:
-    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Examine one candidate page ordered by EPSS descending. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, limit, returned score date and nextOffset.',
+    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Examine one candidate page ordered by EPSS descending. Each serialized response surface fits 65536 UTF-8 bytes; budgetLimited and withheldCount disclose whole matches withheld, with nextOffset at the first withheld match. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, limit, returned score date and nextOffset.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ...filterShape,
@@ -77,7 +84,10 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
         offset: z.number().int().describe('Candidate offset examined.'),
         limit: z.number().int().describe('Candidate page limit.'),
         examinedCount: z.number().int().describe('Candidates examined before year filtering.'),
-        returnedCount: z.number().int().describe('Records retained after filtering.'),
+        returnedCount: z
+          .number()
+          .int()
+          .describe('Whole records retained after filtering and response byte budgeting.'),
         candidateTotal: z.number().int().describe('Exact broad-query candidate count.'),
         total: z
           .number()
@@ -87,8 +97,27 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
         totalRelation: z.enum(['exact', 'unknown']).describe('Whether total is exact or unknown.'),
         hasMore: z
           .boolean()
-          .describe('More candidate pages exist; not a guarantee of more year matches.'),
-        nextOffset: z.number().int().optional().describe('Candidate continuation offset.'),
+          .describe(
+            'Withheld matches or more candidates exist; not a guarantee of more year matches.',
+          ),
+        nextOffset: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'First withheld match candidate position, or next candidate page when no matches were withheld.',
+          ),
+        budgetLimited: z
+          .boolean()
+          .optional()
+          .describe('True when complete matches were withheld to fit the response byte budget.'),
+        withheldCount: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Matches inspected but withheld by the response byte budget; recovered with nextOffset.',
+          ),
       })
       .describe('Candidate pagination accounting.'),
     provenance: provenanceSchema.describe(
@@ -115,9 +144,17 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       recovery:
         "Retry the same tool call once; if it persists, call epss_list_reference with topic='coverage' and do not interpret the response as missing scores.",
     },
+    {
+      reason: 'snapshot_unavailable',
+      code: JsonRpcErrorCode.ValidationError,
+      thrownBy: 'service',
+      when: 'FIRST identifies the requested dated snapshot as unavailable.',
+      retryable: false,
+      recovery: 'Call the same tool with another date or omit date for latest available data.',
+    },
   ],
   async handler(input, ctx) {
-    const { notices, ...result } = await getEpssService().queryThreshold(
+    const { notices, matchOffsets, ...result } = await getEpssService().queryThreshold(
       {
         limit: input.limit,
         offset: input.offset,
@@ -131,30 +168,79 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       },
       ctx,
     );
-    if (notices.length) ctx.enrich({ notice: notices.join('\n') });
-    return result;
+    const assemble = (count: number) => {
+      const limited = count < result.scores.length;
+      const value = {
+        ...result,
+        scores: result.scores.slice(0, count),
+        pagination: {
+          ...result.pagination,
+          ...(limited
+            ? {
+                returnedCount: count,
+                withheldCount: result.scores.length - count,
+                budgetLimited: true,
+                hasMore: true,
+                // biome-ignore lint/style/noNonNullAssertion: limited means count indexes a withheld match and its parallel candidate offset.
+                nextOffset: matchOffsets[count]!,
+              }
+            : {}),
+        },
+      };
+      const notice = [
+        ...notices,
+        ...(limited
+          ? [
+              'Response byte budget reached. Matches were inspected but withheld; continue with nextOffset, the same filters and limit, and the returned score date.',
+            ]
+          : []),
+      ].join('\n');
+      const surfaces = measuredSurfaces(value, formatThreshold(value), notice);
+      return {
+        value,
+        notice,
+        fits:
+          serializedBytes(surfaces.content) <= RESPONSE_BUDGET_IN_BYTES &&
+          serializedBytes(surfaces.structuredContent) <= RESPONSE_BUDGET_IN_BYTES,
+      };
+    };
+    let fitted = assemble(result.scores.length);
+    if (!fitted.fits) {
+      const count = fittingPrefix(result.scores.length, (n) => assemble(n).fits);
+      fitted = assemble(count);
+      if (!fitted.fits || (result.scores.length > 0 && count === 0))
+        throw serializationError('A single complete EPSS entry exceeds the response byte budget.');
+    }
+    if (fitted.notice) ctx.enrich({ notice: fitted.notice });
+    return fitted.value;
   },
-  format(result) {
-    const p = result.pagination;
-    const f = result.filters;
-    return [
-      {
-        type: 'text',
-        text: [
-          scoresText(result.scores),
-          '## Applied filters',
-          `minEpss: ${f.minEpss ?? 'unset'}; maxEpss: ${f.maxEpss ?? 'unset'}; minPercentile: ${f.minPercentile ?? 'unset'}; maxPercentile: ${f.maxPercentile ?? 'unset'}`,
-          `year: ${f.year ?? 'unset'}; addedWithinDays: ${f.addedWithinDays ?? 'unset'}; date: ${f.date ?? 'latest available'}; limit: ${f.limit ?? 100}; offset: ${f.offset ?? 0}`,
-          '## Candidate pagination',
-          `offset: ${p.offset}; limit: ${p.limit}; examinedCount: ${p.examinedCount}; returnedCount: ${p.returnedCount}; candidateTotal: ${p.candidateTotal}; total: ${p.total === null ? 'null' : p.total}; totalRelation: ${p.totalRelation}; hasMore: ${p.hasMore}; nextOffset: ${p.nextOffset ?? 'none'}`,
-          ...(p.hasMore
-            ? [
-                `Call epss_query_threshold with the same filters and limit, date=${result.provenance.scoreDates[0]}, offset=${p.nextOffset}.`,
-              ]
-            : []),
-          provenanceText(result.provenance),
-        ].join('\n\n'),
-      },
-    ];
-  },
+  format: formatThreshold,
 });
+
+function formatThreshold(
+  result: Omit<ThresholdResult, 'notices' | 'matchOffsets'>,
+): ContentBlock[] {
+  const p = result.pagination;
+  const f = result.filters;
+  return [
+    {
+      type: 'text',
+      text: [
+        scoresText(result.scores),
+        '## Applied filters',
+        `minEpss: ${f.minEpss ?? 'unset'}; maxEpss: ${f.maxEpss ?? 'unset'}; minPercentile: ${f.minPercentile ?? 'unset'}; maxPercentile: ${f.maxPercentile ?? 'unset'}`,
+        `year: ${f.year ?? 'unset'}; addedWithinDays: ${f.addedWithinDays ?? 'unset'}; date: ${f.date ?? 'latest available'}; limit: ${f.limit ?? 100}; offset: ${f.offset ?? 0}`,
+        '## Candidate pagination',
+        `offset: ${p.offset}; limit: ${p.limit}; examinedCount: ${p.examinedCount}; returnedCount: ${p.returnedCount}; candidateTotal: ${p.candidateTotal}; total: ${p.total === null ? 'null' : p.total}; totalRelation: ${p.totalRelation}; hasMore: ${p.hasMore}; nextOffset: ${p.nextOffset ?? 'none'}`,
+        ...(p.budgetLimited !== undefined ? [`budgetLimited: ${p.budgetLimited}`] : []),
+        ...(p.withheldCount !== undefined ? [`withheldCount: ${p.withheldCount}`] : []),
+        ...(p.hasMore
+          ? [
+              `Call epss_query_threshold with the same filters and limit, date=${result.provenance.scoreDates[0]}, offset=${p.nextOffset}.`,
+            ]
+          : []),
+        provenanceText(result.provenance),
+      ].join('\n\n'),
+    },
+  ];
+}

@@ -3,9 +3,10 @@
  * @module services/epss/epss-service
  */
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
-import { createPacer, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
-import { checkSignal, safeError } from './errors.js';
+import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { createPacer, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { requestApi } from './api-request.js';
+import { checkSignal, safeError, localValidationError as validationError } from './errors.js';
 import { HEADER_URL, ModelHeaderCache } from './model-header.js';
 import {
   chunkCves,
@@ -187,10 +188,12 @@ export class EpssService {
       this.validateDates(candidates, date);
       if (new Set(candidates.map((score) => score.cve)).size !== candidates.length) upstreamShape();
       const { provenance, notices } = await this.attribute(candidates, date, ctx, signal);
-      const scores =
-        input.year === undefined
-          ? candidates
-          : candidates.filter((score) => score.cve.startsWith(`CVE-${input.year}-`));
+      const matchOffsets: number[] = [];
+      const scores = candidates.filter((score, index) => {
+        const matches = input.year === undefined || score.cve.startsWith(`CVE-${input.year}-`);
+        if (matches) matchOffsets.push(offset + index);
+        return matches;
+      });
       const nextOffset = offset + candidates.length;
       const hasMore = nextOffset < envelope.total;
       if (!scores.length)
@@ -200,6 +203,7 @@ export class EpssService {
             : "No CVEs matched these filters. Call epss_query_threshold with broader bounds or epss_list_reference with topic='coverage'.",
         );
       return {
+        matchOffsets,
         scores,
         filters,
         pagination: {
@@ -254,12 +258,11 @@ export class EpssService {
           return await pacer.run(
             async () => {
               checkSignal(attemptSignal);
-              const response = await fetchWithTimeout(`${API_URL}?${params}`, 10000, ctx, {
-                signal: attemptSignal,
-                errorBodyLimit: 0,
-                redirect: 'error',
-              });
-              const text = await response.text();
+              const text = await requestApi(
+                `${API_URL}?${params}`,
+                attemptSignal,
+                params.get('date') ?? undefined,
+              );
               if (/^\s*<(?:!doctype\s+html|html[\s>])/i.test(text))
                 throw serviceUnavailable('FIRST EPSS returned an HTML availability page.');
               let value: unknown;
@@ -297,7 +300,7 @@ export class EpssService {
 
   private async batch(input: BatchInput, history: boolean, ctx: Context, signal: AbortSignal) {
     const date = normalizeDate(input.date);
-    const batch = normalizeBatch(input.cves, history ? 50 : 500);
+    const batch = normalizeBatch(input.cves, history ? 50 : 500, input.batchOffset);
     const items: RawTimeseriesItem[] = [];
     let pinnedDate = date;
     for (const chunk of chunkCves(batch.validCves)) {
@@ -339,10 +342,20 @@ export class EpssService {
       deferredCves: batch.deferredCves,
       unscoredCves: batch.processedCves
         .filter((cve) => !returned.has(cve))
-        .map(
-          (cve) =>
-            invalid.get(cve) ?? { cve, reason: 'not_returned' as const, guidance: missingGuidance },
-        ),
+        .map((cve) => {
+          const entry = invalid.get(cve) ?? {
+            cve,
+            reason: 'not_returned' as const,
+            guidance: missingGuidance,
+          };
+          return {
+            ...entry,
+            guidance: entry.guidance.replaceAll(
+              'epss_get_scores',
+              history ? 'epss_get_timeseries' : 'epss_get_scores',
+            ),
+          };
+        }),
     };
     const { provenance, notices } = await this.attribute(
       items.flatMap((item) => [item.current, ...item.series]),
@@ -354,7 +367,7 @@ export class EpssService {
     if (!items.length) notices.push(coverageNotice);
     if (batch.deferredCves.length)
       notices.push(
-        'Some CVEs were deferred by the per-call workload limit; process deferredCves in another call.',
+        'Some CVEs were deferred by the per-call workload limit; resume with nextBatchOffset as batchOffset, the original cves and returned score date.',
       );
     return { items, accounting, provenance, notices };
   }
@@ -383,7 +396,10 @@ export class EpssService {
       if (header?.scoreDate === score.date) {
         score.modelVersion = header.modelVersion;
         score.modelVersionSource = 'csv_header';
-      } else if (requestedDate && score.date <= MODEL_SCHEDULE_VERIFIED_AT) {
+      } else if (
+        (requestedDate || (anchorDates && !anchorDates.includes(score.date))) &&
+        score.date <= MODEL_SCHEDULE_VERIFIED_AT
+      ) {
         const model = MODEL_TRANSITIONS.findLast((model) => model.date <= score.date);
         if (model) {
           score.modelVersionSource = 'published_schedule';
