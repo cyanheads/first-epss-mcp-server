@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/first-epss-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.cyanheads/first-epss-mcp-server",
   "description": "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
