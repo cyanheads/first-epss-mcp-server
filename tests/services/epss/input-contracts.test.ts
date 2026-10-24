@@ -4,8 +4,27 @@
  */
 import { z } from '@cyanheads/mcp-ts-core';
 import { describe, expect, it } from 'vitest';
+import { epssQueryThreshold } from '@/mcp-server/tools/definitions/epss-query-threshold.tool.js';
 import { cvesSchema, dateSchema } from '@/mcp-server/tools/schemas.js';
 import { normalizeCve } from '@/services/epss/normalization.js';
+
+describe('threshold limit input contract', () => {
+  it.each([1, 100, 10000, 10001, Number.MAX_SAFE_INTEGER])(
+    'accepts positive safe integer %s',
+    (limit) => {
+      expect(epssQueryThreshold.input.parse({ minEpss: 0, limit }).limit).toBe(limit);
+    },
+  );
+  it.each([0, -1, 1.5, Infinity, -Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid limit %s',
+    (limit) => {
+      expect(epssQueryThreshold.input.safeParse({ minEpss: 0, limit }).success).toBe(false);
+    },
+  );
+  it('preserves the omitted default', () => {
+    expect(epssQueryThreshold.input.parse({ minEpss: 0 }).limit).toBe(100);
+  });
+});
 
 describe('date input compatibility', () => {
   it('advertises the linear blank-or-date pattern', () => {

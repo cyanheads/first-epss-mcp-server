@@ -3,6 +3,8 @@
  * @module mcp-server/tools/format
  */
 import type { z } from '@cyanheads/mcp-ts-core';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { isCve } from '../../services/epss/normalization.js';
 import type { provenanceSchema, scoreSchema, unscoredSchema } from './schemas.js';
 
 type Score = z.infer<typeof scoreSchema>;
@@ -11,7 +13,11 @@ type UnscoredCve = z.infer<typeof unscoredSchema>;
 
 /** Escape untrusted values in Markdown tables and labelled lines. */
 export function cell(value: unknown): string {
-  return String(value).replaceAll('\\', '\\\\').replaceAll('|', '\\|').replaceAll('\n', ' ');
+  return escapeMarkdownInline(String(value));
+}
+/** Malformed identifiers use JSON string literals to preserve control and whitespace bytes. */
+export function identifierText(cve: string): string {
+  return escapeMarkdownInline(isCve(cve) ? cve : JSON.stringify(cve));
 }
 /** Render every forecast field without rounding. */
 export function scoresText(scores: Score[]): string {
@@ -51,7 +57,7 @@ export function unscoredText(
     '## Unscored CVEs',
     ...items.map(
       (item) =>
-        `- ${cell(item.cve)}: ${item.reason}${includeSeverity ? `; CVSS base score: ${item.cvssBaseScore ?? 'unknown'}` : ''}. ${item.guidance}`,
+        `- ${identifierText(item.cve)}: ${item.reason}${includeSeverity ? `; CVSS base score: ${item.cvssBaseScore ?? 'unknown'}` : ''}. ${item.guidance}`,
     ),
     ...(items.length ? [] : ['None.']),
   ].join('\n');
@@ -84,7 +90,7 @@ export function accountingText(
           `Batch offset: ${value.batchOffset}; returned count: ${value.returnedCount}; withheld count: ${value.withheldCount}; deferred count: ${value.deferredCount}; budget limited: ${value.budgetLimited}.`,
           `Withheld CVEs complete: ${value.withheldCvesComplete}; deferred CVEs complete: ${value.deferredCvesComplete}.`,
           '## Already processed but withheld CVEs',
-          ...(value.withheldCves ?? []).map((cve) => `- ${cell(cve)}`),
+          ...(value.withheldCves ?? []).map((cve) => `- ${identifierText(cve)}`),
           ...(value.nextBatchOffset === undefined
             ? []
             : [
@@ -93,7 +99,7 @@ export function accountingText(
         ]),
     unscoredText(value.unscoredCves, tool === 'epss_prioritize_cves'),
     '## Deferred CVEs',
-    ...value.deferredCves.map((cve) => `- ${cell(cve)}`),
+    ...value.deferredCves.map((cve) => `- ${identifierText(cve)}`),
     value.deferredCves.length
       ? `Deferred identifiers have not been queried. ${value.batchOffset === undefined ? `Call ${tool} with these deferred CVEs to process the remainder.` : 'Use nextBatchOffset with the original submission to resume.'}`
       : value.deferredCount

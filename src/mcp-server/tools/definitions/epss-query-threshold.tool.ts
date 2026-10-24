@@ -60,9 +60,11 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       .number()
       .int()
       .min(1)
-      .max(10000)
+      .max(Number.MAX_SAFE_INTEGER)
       .default(100)
-      .describe('Maximum candidates examined per page, before exact-year filtering.'),
+      .describe(
+        'Requested candidates per page; positive safe integers above 10000 are clamped to 10000 before exact-year filtering.',
+      ),
     offset: z
       .number()
       .int()
@@ -154,9 +156,10 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
     },
   ],
   async handler(input, ctx) {
+    const limit = Math.min(input.limit, 10000);
     const { notices, matchOffsets, ...result } = await getEpssService().queryThreshold(
       {
-        limit: input.limit,
+        limit,
         offset: input.offset,
         ...(input.minEpss === undefined ? {} : { minEpss: input.minEpss }),
         ...(input.maxEpss === undefined ? {} : { maxEpss: input.maxEpss }),
@@ -168,6 +171,10 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       },
       ctx,
     );
+    if (input.limit !== limit)
+      notices.push(
+        `Requested candidate limit ${input.limit}; applied limit ${limit}. Continue with the applied limit and nextOffset when available.`,
+      );
     const assemble = (count: number) => {
       const limited = count < result.scores.length;
       const value = {

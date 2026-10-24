@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/first-epss-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/first-epss-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/first-epss-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/first-epss-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/first-epss-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/first-epss-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -16,6 +16,12 @@
 [![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/first-epss-mcp-server/releases/latest/download/first-epss-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=first-epss-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvZmlyc3QtZXBzcy1tY3Atc2VydmVyIl19) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22first-epss-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Ffirst-epss-mcp-server%22%5D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
+
+</div>
+
+<div align="center">
+
+**Public Hosted Server:** [https://first-epss.caseyjhand.com/mcp](https://first-epss.caseyjhand.com/mcp)
 
 </div>
 
@@ -58,7 +64,7 @@ Daily forecasts of observed CVE exploitation within the next 30 days from [FIRST
 ### `epss_query_threshold` <sub>tool</sub>
 
 - Inclusive `minEpss` / `maxEpss` / `minPercentile` / `maxPercentile` bounds, `year`, and `addedWithinDays` intersect, with optional historical `date`; at least one filter and ordered bounds are required, otherwise `invalid_filter_combination`. `addedWithinDays` is dataset-addition recency and ignores `date`
-- One candidate page per call in EPSS descending order: `limit` 1–10,000 (default 100) plus `offset`. With `year`, `candidateTotal` counts broad candidates and `total` is `null` (`totalRelation: "unknown"`), so a filtered page can be empty with `hasMore: true`
+- One candidate page per call in EPSS descending order: positive safe-integer `limit` (default 100) plus `offset`. Limits above 10,000 are clamped to 10,000; the notice reports requested/applied values and both `filters.limit` and `pagination.limit` echo the applied limit. With `year`, `candidateTotal` counts broad candidates and `total` is `null` (`totalRelation: "unknown"`), so a filtered page can be empty with `hasMore: true`
 - Complete score rows fit within the 65,536-byte limit on each serialized response surface. When rows are withheld, `pagination.budgetLimited` is true and `withheldCount` counts inspected matches omitted; `examinedCount` still counts every inspected candidate. `nextOffset` resumes at the first withheld match's original candidate position, including with year filtering
 - Continue with the same filters and `limit`, `provenance.scoreDates[0]` as `date`, and `nextOffset` as `offset`
 
@@ -83,6 +89,8 @@ All four dynamic tools bound each JSON-serialized `content` array and `structure
 
 Scores, timeseries and prioritization retain whole score rows, history items and unscored entries. `processedCount` still counts the workload processed, including invalid identifiers; `returnedCount` counts complete entries retained and `withheldCount` counts processed entries omitted by the byte limit. `deferredCount` counts entries never queried. `withheldCves` and `deferredCves` retain their array types; their `*Complete` flags explicitly identify previews when the full lists cannot fit. `budgetLimited` discloses any response shortening.
 
+Malformed identifiers in unscored, withheld and deferred text are JSON string literals, escaped for Markdown. JSON decoding recovers the normalized identifier, including embedded CR, LF, tabs and backslashes; canonical CVEs remain plain identifiers. Structured identifiers are unchanged. Exhausted batch offsets report completion without upstream lookups or missing-score claims. Threshold notices distinguish a globally empty search, exhausted candidate offsets, and an exact-year page without matches, including the final page.
+
 When `nextBatchOffset` is present, call the same tool with the **original** `cves`, `nextBatchOffset` as `batchOffset`, and `provenance.scoreDates[0]` as `date` (retain the requested date if no score date was returned). Prioritization also keeps every original `cvssBaseScore`, `severityThreshold` and `likelihood`. The offset counts normalized unique identifiers in first-occurrence input order, including invalid entries; score sorting does not change it. Continue until `nextBatchOffset` is absent. An offset past the end returns explicit empty accounting. Lists are for inspection; continuation through the original batch preserves entries even when lists are previews.
 
 ## Features
@@ -102,6 +110,45 @@ Agent-friendly output:
 - Structured results and formatted text carry the same accounting, history gaps, pagination, thresholds, and recovery guidance
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://first-epss.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http first-epss-mcp-server https://first-epss.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "first-epss-mcp-server": {
+      "type": "streamableHttp",
+      "url": "https://first-epss.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "first-epss-mcp-server": {
+      "url": "https://first-epss.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 

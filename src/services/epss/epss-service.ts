@@ -196,12 +196,22 @@ export class EpssService {
       });
       const nextOffset = offset + candidates.length;
       const hasMore = nextOffset < envelope.total;
-      if (!scores.length)
-        notices.push(
-          hasMore && input.year !== undefined
-            ? 'No exact-year matches occurred in this candidate page. Call epss_query_threshold with the same filters, returned score date, and nextOffset.'
-            : "No CVEs matched these filters. Call epss_query_threshold with broader bounds or epss_list_reference with topic='coverage'.",
-        );
+      if (!scores.length) {
+        if (input.year !== undefined)
+          notices.push(
+            hasMore
+              ? 'No exact-year matches occurred in this candidate page. Call epss_query_threshold with the same filters, returned score date, and nextOffset.'
+              : `No exact-year matches occurred in this candidate page. Candidate pagination complete. The exact-year total remains unknown.${offset > 0 ? ' Use an earlier offset to inspect previous candidates.' : ''}`,
+          );
+        else if (envelope.total > 0)
+          notices.push(
+            'Candidate pagination complete. The offset is at or beyond the candidate total; use an earlier offset to inspect previous candidates.',
+          );
+        else
+          notices.push(
+            "No CVEs matched these filters. Call epss_query_threshold with broader bounds or epss_list_reference with topic='coverage'.",
+          );
+      }
       return {
         matchOffsets,
         scores,
@@ -364,7 +374,11 @@ export class EpssService {
       signal,
       items.map((item) => item.current.date),
     );
-    if (!items.length) notices.push(coverageNotice);
+    if (batch.processedCount === 0)
+      notices.push(
+        'Batch complete. The batchOffset is at or beyond the normalized unique input count; use an earlier batchOffset to inspect previous entries.',
+      );
+    else if (!items.length) notices.push(coverageNotice);
     if (batch.deferredCves.length)
       notices.push(
         'Some CVEs were deferred by the per-call workload limit; resume with nextBatchOffset as batchOffset, the original cves and returned score date.',

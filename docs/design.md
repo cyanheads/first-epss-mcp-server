@@ -91,7 +91,7 @@ An absent `time-series` field is missing history, not 30 zeroes: return empty `s
 | `year` | Optional integer `1999..today UTC year` | Broad candidate search `q=year`, followed by exact `CVE-${year}-` prefix matching |
 | `addedWithinDays` | Optional positive integer, max 100,000 | `days`: dataset addition recency relative to upstream present, unaffected by `date` |
 | `date` | Optional date | Historical score snapshot; does not re-anchor `days` |
-| `limit` | Integer `1..10000`, default 100 | Maximum upstream candidates examined this call |
+| `limit` | Positive safe integer, default 100 | Clamp to 10,000 before the service call; echo the applied limit and disclose requested/applied values in the notice |
 | `offset` | Nonnegative integer, default 0 | Upstream candidate offset, also with a year filter |
 
 At least one bound, year, or addition filter is required; there is no hidden minimum-score default. Multiple filters intersect. Reject inverted min/max ranges. Always send verified `order=!epss`, never `sort`. Echo all applied filters, resolved score date, and pagination semantics.
@@ -110,7 +110,9 @@ The truncation linter recognizes only top-level `truncated`/`totalCount` fields.
 
 Collect provenance score dates from all examined candidates before local filtering, so an empty exact-year page still carries its snapshot date for continuation. An entirely empty upstream result has no invented score date and needs no continuation.
 
-Empty candidate result notice: “No CVEs matched these filters. Call epss_query_threshold with broader bounds or epss_list_reference with topic='coverage'.” Empty year-filtered page with continuation: “No exact-year matches occurred in this candidate page. Call epss_query_threshold with the same filters, returned score date, and nextOffset.” `days` is documented addition recency, not publication recency or an EPSS movement window.
+Only a globally empty search without a year filter reports no matching CVEs. An offset at or beyond a positive candidate total reports candidate pagination complete and suggests an earlier offset. An empty year-filtered page reports no exact-year matches in that page, preserving unknown exact-year totals even on the final page; a continuation notice names nextOffset only when present. `days` is documented addition recency, not publication recency or an EPSS movement window.
+
+Batch offsets at or beyond the normalized unique-input count report completion, perform no upstream lookup, and do not claim omissions. Actual processed omissions retain coverage guidance. Malformed identifiers in unscored, withheld and deferred Markdown use JSON string literals through the framework inline escaper, because CommonMark normalizes embedded CR/CRLF and control characters. JSON decoding recovers the exact normalized bytes. Canonical CVEs remain plain. Final byte measurements include the framework's escaped generic notice trailer.
 
 ### epss_prioritize_cves
 

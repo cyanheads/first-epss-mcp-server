@@ -5,6 +5,7 @@
 import type { ContentBlock } from '@cyanheads/mcp-ts-core';
 import { serializationError } from '@cyanheads/mcp-ts-core/errors';
 import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { normalizeCve } from '../../services/epss/index.js';
 
 /** Maximum UTF-8 bytes for each JSON-serialized caller surface. */
@@ -23,7 +24,9 @@ export function measuredSurfaces(
   notice?: string,
 ) {
   return {
-    content: notice ? [...content, { type: 'text', text: `\n\n**notice:** ${notice}` }] : content,
+    content: notice
+      ? [...content, { type: 'text', text: `\n\n**notice:** ${escapeMarkdownInline(notice)}` }]
+      : content,
     structuredContent: notice ? { ...domain, notice } : domain,
   };
 }

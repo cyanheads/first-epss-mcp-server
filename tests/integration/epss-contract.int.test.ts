@@ -5,6 +5,8 @@
 import type { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
+import MarkdownIt from 'markdown-it';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   epssGetScores,
@@ -13,7 +15,7 @@ import {
   epssPrioritizeCves,
   epssQueryThreshold,
 } from '@/mcp-server/tools/definitions/index.js';
-import { accountingText } from '@/mcp-server/tools/format.js';
+import { accountingText, identifierText } from '@/mcp-server/tools/format.js';
 import { measuredSurfaces, serializedBytes } from '@/mcp-server/tools/response-budget.js';
 import { disposeEpssService, initEpssService, shiftDate } from '@/services/epss/index.js';
 
@@ -50,6 +52,9 @@ function envelope(url: URL, data: unknown[], total = data.length) {
 type Result = Awaited<ReturnType<typeof runToolContract>>;
 function text(result: Result) {
   return result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+}
+function enriched(result: Result): Record<string, unknown> {
+  return result.structuredContent as Record<string, unknown>;
 }
 function success<T>(result: Result, schema: z.ZodType<T>): T {
   expect(result.isError, text(result)).not.toBe(true);
@@ -466,6 +471,262 @@ describe('sparse history and official metadata redirect regressions', () => {
 
 describe('batch response byte budget', batchBudgetTests);
 
+describe('pagination and literal accounting regressions', () => {
+  const markdown = new MarkdownIt('commonmark');
+  function paragraphs(source: string): string[] {
+    return markdown
+      .parse(source, {})
+      .filter((token) => token.type === 'inline')
+      .map((token) => {
+        expect(token.children?.every((child) => child.type === 'text')).toBe(true);
+        return token.children?.map((child) => child.content).join('') ?? '';
+      });
+  }
+  it.each([
+    '<B>BAD</B>',
+    '**BAD**',
+    '[LINK](HTTPS://EXAMPLE.COM)',
+    '&COPY;',
+    '&#13;',
+    'BAD\rNEXT',
+    'BAD\nNEXT',
+    'BAD\r\nNEXT',
+    'BAD\tNEXT',
+    'BAD\\|`NEXT',
+    '"BAD"',
+    'BAD\u0000NEXT',
+  ])('recovers malformed identifier %j at the shared formatting seam', (identifier) => {
+    const parsed = paragraphs(identifierText(identifier));
+    expect(parsed).toHaveLength(1);
+    expect(JSON.parse(parsed[0]!)).toBe(identifier);
+  });
+  it('characterizes genuine omissions without manufacturing scores', async () => {
+    api = (url) => envelope(url, []);
+    const result = await runToolContract(epssGetScores, { cves: [cve(0)], date });
+    expect(result.structuredContent).toMatchObject({
+      processedCount: 1,
+      unscoredCves: [{ cve: cve(0), reason: 'not_returned' }],
+    });
+    expect(text(result)).toContain('No requested CVEs were returned');
+    expect(calls).toHaveLength(1);
+  });
+  it.each([epssGetScores, epssGetTimeseries, epssPrioritizeCves])(
+    'reports completed normalized input for $name without any fetch',
+    async (definition) => {
+      const fetches = vi.fn(async () => {
+        throw new Error('Unexpected fetch');
+      });
+      vi.stubGlobal('fetch', fetches);
+      for (const batchOffset of [1, 2]) {
+        const cves =
+          definition === epssPrioritizeCves
+            ? [
+                { cve: cve(0), cvssBaseScore: 8 },
+                { cve: cve(0), cvssBaseScore: 8 },
+              ]
+            : [cve(0), cve(0)];
+        const result = await runToolContract(definition, { cves, date, batchOffset });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({ requestedCount: 1, processedCount: 0 });
+        expect(enriched(result).notice).toContain('Batch complete');
+        expect(text(result)).toContain('Batch complete');
+        expect(text(result)).not.toContain('No requested CVEs');
+      }
+      expect(fetches).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { total: 2, offset: 2 },
+    { total: 2, offset: 3 },
+    { total: 0, offset: 0 },
+  ])('distinguishes discovery completion from global no-match: %j', async ({ total, offset }) => {
+    api = (url) => envelope(url, [], total);
+    const result = await runToolContract(epssQueryThreshold, { minEpss: 0, date, offset });
+    const notice = enriched(result).notice as string;
+    expect(notice).toContain(total ? 'Candidate pagination complete' : 'No CVEs matched');
+    expect(text(result)).toContain(notice);
+  });
+  it('describes an empty final exact-year page without a global no-match claim', async () => {
+    api = (url) => envelope(url, [row('CVE-2025-2021')], 1);
+    const result = await runToolContract(epssQueryThreshold, { year: 2021, limit: 1, date });
+    expect(result.structuredContent).toMatchObject({
+      pagination: { total: null, totalRelation: 'unknown', hasMore: false, examinedCount: 1 },
+    });
+    expect(enriched(result).notice).toContain(
+      'No exact-year matches occurred in this candidate page',
+    );
+    expect(text(result)).not.toContain('No CVEs matched');
+  });
+  it.each([10001, Number.MAX_SAFE_INTEGER])(
+    'clamps requested limit %s before fetching',
+    async (limit) => {
+      api = (url) => envelope(url, []);
+      const result = await runToolContract(epssQueryThreshold, { minEpss: 0, limit, date });
+      expect(result.isError).not.toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.searchParams.get('limit')).toBe('10000');
+      expect(result.structuredContent).toMatchObject({
+        filters: { limit: 10000 },
+        pagination: { limit: 10000 },
+      });
+      expect(enriched(result).notice).toContain(
+        `Requested candidate limit ${limit}; applied limit 10000`,
+      );
+      expect(text(result)).toContain(`Requested candidate limit ${limit}; applied limit 10000`);
+    },
+  );
+  it('the CommonMark recovery harness rejects interpreted syntax', () => {
+    expect(() => paragraphs('**BAD**')).toThrow();
+    expect(paragraphs('"BAD\\\\NEXT"')).toEqual(['"BAD\\NEXT"']);
+  });
+  it.each([epssGetScores, epssGetTimeseries, epssPrioritizeCves])(
+    'recovers exact normalized invalid identifier bytes from $name',
+    async (definition) => {
+      const identifiers = [
+        '<b>bad</b>',
+        '**bad**',
+        '[link](https://example.com)',
+        '&copy;',
+        'bad\r\nnext\t\\|`',
+        'bad\u0000next',
+      ];
+      const fetches = vi.fn(async () => {
+        throw new Error('Unexpected fetch');
+      });
+      vi.stubGlobal('fetch', fetches);
+      const cves =
+        definition === epssPrioritizeCves
+          ? identifiers.map((cve) => ({ cve, cvssBaseScore: 8 }))
+          : identifiers;
+      const result = await runToolContract(definition, { cves, date });
+      expect(result.isError).not.toBe(true);
+      const entries = enriched(result).unscoredCves as { cve: string }[];
+      const section = text(result).split('## Unscored CVEs\n')[1]!.split('\n## Deferred CVEs')[0]!;
+      const recovered = paragraphs(section).map((line) =>
+        JSON.parse(line.split(': invalid_format')[0]!),
+      );
+      expect(recovered).toEqual(entries.map((entry) => entry.cve));
+      expect(recovered).toEqual([
+        '<B>BAD</B>',
+        '**BAD**',
+        '[LINK](HTTPS://EXAMPLE.COM)',
+        '&COPY;',
+        'BAD\r\nNEXT\t\\|`',
+        'BAD\u0000NEXT',
+      ]);
+      expect(fetches).not.toHaveBeenCalled();
+    },
+  );
+  it.each([epssGetScores, epssGetTimeseries, epssPrioritizeCves])(
+    'preserves literal withheld and deferred previews and lossless continuation for $name',
+    async (definition) => {
+      const identifiers = Array.from({ length: 510 }, (_, i) => `${i}${'\u0000'.repeat(124)}`);
+      if (definition === epssGetTimeseries) {
+        identifiers.unshift(...ids(5));
+        api = (url) =>
+          envelope(
+            url,
+            (url.searchParams.get('cve') ?? '')
+              .split(',')
+              .filter(Boolean)
+              .map((id) =>
+                row(id, {
+                  'time-series': Array.from({ length: 30 }, (_, i) => ({
+                    date: shiftDate(date, -i - 1),
+                    epss: '0.1',
+                    percentile: '0.9',
+                  })),
+                }),
+              ),
+          );
+      }
+      const cves =
+        definition === epssPrioritizeCves
+          ? identifiers.map((cve) => ({ cve, cvssBaseScore: 8 }))
+          : identifiers;
+      const seen: string[] = [];
+      let batchOffset = 0;
+      do {
+        const result = await runToolContract(definition, { cves, date, batchOffset });
+        expect(result.isError, text(result)).not.toBe(true);
+        const value = result.structuredContent as {
+          returnedCount: number;
+          processedCount: number;
+          withheldCount: number;
+          deferredCount: number;
+          unscoredCves: { cve: string; cvssBaseScore?: number }[];
+          items?: { current: { cve: string } }[];
+          withheldCves: string[];
+          deferredCves: string[];
+          withheldCvesComplete: boolean;
+          deferredCvesComplete: boolean;
+          nextBatchOffset?: number;
+          notice: string;
+        };
+        const normalized = identifiers.map((id) => id.trim().toUpperCase());
+        const retained = normalized.slice(batchOffset, batchOffset + value.returnedCount);
+        expect(value.unscoredCves.map((entry) => entry.cve)).toEqual(
+          retained.filter((id) => !id.startsWith('CVE-')),
+        );
+        if (definition === epssPrioritizeCves)
+          expect(value.unscoredCves.every((entry) => entry.cvssBaseScore === 8)).toBe(true);
+        const emitted = [
+          ...(value.items?.map((item) => item.current.cve) ?? []),
+          ...value.unscoredCves.map((entry) => entry.cve),
+        ];
+        expect(emitted).toEqual(retained);
+        seen.push(...emitted);
+        expect(value.withheldCount).toBe(value.processedCount - value.returnedCount);
+        expect(value.withheldCves).toEqual(
+          normalized.slice(
+            batchOffset + value.returnedCount,
+            batchOffset + value.returnedCount + value.withheldCves.length,
+          ),
+        );
+        expect(value.deferredCves).toEqual(
+          normalized.slice(
+            batchOffset + value.processedCount,
+            batchOffset + value.processedCount + value.deferredCves.length,
+          ),
+        );
+        expect(value.withheldCvesComplete).toBe(value.withheldCves.length === value.withheldCount);
+        expect(value.deferredCvesComplete).toBe(value.deferredCves.length === value.deferredCount);
+        for (const [heading, entries] of [
+          ['Already processed but withheld CVEs', value.withheldCves],
+          ['Deferred CVEs', value.deferredCves],
+        ] as const) {
+          const lines = text(result).split(`## ${heading}\n`)[1]!.split('\n');
+          const end = lines.findIndex((line) => !line.startsWith('- '));
+          const section = lines.slice(0, end === -1 ? lines.length : end).join('\n');
+          expect(paragraphs(section).map((line) => JSON.parse(line))).toEqual(entries);
+        }
+        expect(serializedBytes(result.content)).toBeLessThanOrEqual(65536);
+        expect(serializedBytes(result.structuredContent)).toBeLessThanOrEqual(65536);
+        const { notice, ...domain } = enriched(result);
+        expect(
+          measuredSurfaces(
+            domain,
+            (definition as AnyToolDefinition).format!(domain),
+            notice as string,
+          ),
+        ).toEqual({
+          content: result.content,
+          structuredContent: result.structuredContent,
+        });
+        if (batchOffset === 0) {
+          expect(value.withheldCount).toBeGreaterThan(0);
+          expect(value.deferredCount).toBeGreaterThan(0);
+        }
+        if (value.nextBatchOffset === undefined) break;
+        expect(value.nextBatchOffset).toBe(batchOffset + value.returnedCount);
+        batchOffset = value.nextBatchOffset;
+      } while (batchOffset < identifiers.length);
+      expect(seen).toEqual(identifiers.map((id) => id.trim().toUpperCase()));
+      if (definition !== epssGetTimeseries) expect(calls).toHaveLength(0);
+    },
+  );
+});
+
 describe('threshold response byte budget', () => {
   it('describes an empty deferred preview without calling unqueried entries absent', () => {
     const rendered = accountingText(
@@ -487,32 +748,35 @@ describe('threshold response byte budget', () => {
     );
     expect(rendered).not.toContain('original severity inputs');
   });
-  it('bounds complete enriched surfaces for 10000 candidates', async () => {
-    const candidates = ids(10000).map((id) => row(id, { date: '2026-10-17' }));
-    api = (url) => envelope(url, candidates);
-    const result = await runToolContract(epssQueryThreshold, { minEpss: 0, limit: 10000 });
-    const value = success(result, epssQueryThreshold.output);
-    expect(value.scores.length).toBeGreaterThan(0);
-    expect(serializedBytes(result.content)).toBeLessThanOrEqual(65536);
-    expect(serializedBytes(result.structuredContent)).toBeLessThanOrEqual(65536);
-    expect(value.pagination.examinedCount).toBe(10000);
-    expect(value.pagination.returnedCount).toBeLessThan(10000);
-    expect(value.pagination).toMatchObject({
-      budgetLimited: true,
-      withheldCount: 10000 - value.scores.length,
-      nextOffset: value.scores.length,
-    });
-    expect(result.structuredContent).not.toHaveProperty('matchOffsets');
-    const notice = (result.structuredContent as Record<string, unknown>).notice as string;
-    expect(notice).toContain('Response byte budget reached');
-    expect(notice).toContain('The current CSV header does not verify the returned score date.');
-    expect(measuredSurfaces(value, epssQueryThreshold.format!(value), notice)).toEqual({
-      content: result.content,
-      structuredContent: result.structuredContent,
-    });
-    expect(text(result)).toContain(`withheldCount: ${10000 - value.scores.length}`);
-    expect(calls).toHaveLength(1);
-  });
+  it.each([10000, 10001])(
+    'bounds complete enriched surfaces for requested limit %s',
+    async (limit) => {
+      const candidates = ids(10000).map((id) => row(id, { date: '2026-10-17' }));
+      api = (url) => envelope(url, candidates);
+      const result = await runToolContract(epssQueryThreshold, { minEpss: 0, limit });
+      const value = success(result, epssQueryThreshold.output);
+      expect(value.scores.length).toBeGreaterThan(0);
+      expect(serializedBytes(result.content)).toBeLessThanOrEqual(65536);
+      expect(serializedBytes(result.structuredContent)).toBeLessThanOrEqual(65536);
+      expect(value.pagination.examinedCount).toBe(10000);
+      expect(value.pagination.returnedCount).toBeLessThan(10000);
+      expect(value.pagination).toMatchObject({
+        budgetLimited: true,
+        withheldCount: 10000 - value.scores.length,
+        nextOffset: value.scores.length,
+      });
+      expect(result.structuredContent).not.toHaveProperty('matchOffsets');
+      const notice = (result.structuredContent as Record<string, unknown>).notice as string;
+      expect(notice).toContain('Response byte budget reached');
+      expect(notice).toContain('The current CSV header does not verify the returned score date.');
+      expect(measuredSurfaces(value, epssQueryThreshold.format!(value), notice)).toEqual({
+        content: result.content,
+        structuredContent: result.structuredContent,
+      });
+      expect(text(result)).toContain(`withheldCount: ${10000 - value.scores.length}`);
+      expect(calls).toHaveLength(1);
+    },
+  );
   it.each([false, true])(
     'recovers every match across capped candidate re-slices (year filter=%s)',
     async (withYear) => {
@@ -539,7 +803,7 @@ describe('threshold response byte budget', () => {
         const result = await runToolContract(epssQueryThreshold, {
           minEpss: 0,
           ...(withYear ? { year: 2026 } : {}),
-          limit: 10000,
+          limit: 10001,
           offset,
           ...(pinnedDate ? { date: pinnedDate } : {}),
         });
@@ -642,7 +906,13 @@ describe('score lookup caller contract', () => {
     scoreParity(value.scores[0]!, rendered);
     provenanceParity(value.provenance, rendered);
     expect(rendered).toContain('Requested count: 3; processed count: 3; duplicate count: 1');
-    expect(rendered).toContain('BAD\\\\\\|ID: invalid_format');
+    const literalText = new MarkdownIt('commonmark')
+      .parse(rendered, {})
+      .filter((token) => token.type === 'inline')
+      .flatMap((token) => token.children ?? [])
+      .map((token) => token.content)
+      .join('\n');
+    expect(literalText).toContain('"BAD\\\\|ID": invalid_format');
     for (const missing of value.unscoredCves) expect(rendered).toContain(missing.guidance);
   });
   it('sorts equal probability by CVE and preserves explicit historical provenance', async () => {
@@ -703,7 +973,7 @@ describe('score lookup caller contract', () => {
     const value = success(result, epssGetScores.output);
     expect(value.unscoredCves).toMatchObject([{ cve: '4', reason: 'invalid_format' }]);
     expect(value.requestedCount).toBe(1);
-    expect(text(result)).toContain('4: invalid_format');
+    expect(text(result)).toContain('"4": invalid_format');
     expect(calls).toEqual([]);
   });
 });
@@ -1017,7 +1287,9 @@ describe('exact-date history policy', () => {
       { cve: 'BAD', reason: 'invalid_format' },
     ]);
     for (const missing of value.unscoredCves) {
-      expect(text(result)).toContain(`${missing.cve}: ${missing.reason}`);
+      expect(text(result)).toContain(
+        `${missing.reason === 'invalid_format' ? JSON.stringify(missing.cve) : missing.cve}: ${missing.reason}`,
+      );
       expect(text(result)).toContain(missing.guidance);
     }
   });
@@ -1301,7 +1573,7 @@ describe('reference and failure consumption paths', () => {
       input: { cves: [{ cve: cve(0) }], likelihood: { metric: 'both', threshold: 0.1 } },
     },
     { tool: epssQueryThreshold, input: { minEpss: 'not numeric' } },
-    { tool: epssQueryThreshold, input: { minEpss: 0, limit: 10001 } },
+    { tool: epssQueryThreshold, input: { minEpss: 0, limit: Number.MAX_SAFE_INTEGER + 1 } },
     { tool: epssQueryThreshold, input: { minEpss: 0, offset: -1 } },
     { tool: epssListReference, input: { topic: 'unknown' } },
   ])('rejects malformed caller input before network %#', async ({ tool, input }) => {

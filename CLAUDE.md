@@ -4,7 +4,7 @@
 
 **Version:** 0.1.2
 
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.16`
 
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 
@@ -27,6 +27,7 @@ Package/install identity is `@cyanheads/first-epss-mcp-server`; registry identit
 - **Preserve bounded work.** Scores/prioritization process 500 unique CVEs; history processes 50; the submission ceiling is 5,000 entries. Batch tools bound each serialized caller surface to 65,536 UTF-8 bytes, retaining whole entries and explicit full counts/preview completeness. Resume with the original submission, returned date, original severity/policy and `nextBatchOffset` as `batchOffset`; already-processed withheld entries differ from never-queried deferrals.
 - **Close the loop on issues.** Follow the authorized workflow's issue-update and closure steps, describing the concrete change for future readers.
 - **Candidate byte continuation.** All four dynamic tools bound each serialized caller surface to 65,536 UTF-8 bytes. Threshold discovery retains whole matches in upstream candidate order, discloses budget cuts with nested `budgetLimited`/`withheldCount`, and resumes at the first withheld match's exact upstream candidate position. Preserve the actual `examinedCount`; an empty year-filtered page advances across every inspected candidate. Candidate-position metadata stays internal.
+- **Literal accounting and completion.** Malformed identifiers render as Markdown-escaped JSON string literals to preserve embedded whitespace/control bytes; canonical CVEs stay plain. Measure the final escaped notice trailer. Exhausted batch/candidate offsets report completion; empty exact-year pages describe only that page. Threshold positive safe-integer limits above 10,000 clamp before the service call and disclose requested/applied values.
 
 ## Patterns
 

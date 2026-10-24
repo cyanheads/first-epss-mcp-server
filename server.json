@@ -7,6 +7,12 @@
     "source": "github"
   },
   "version": "0.1.2",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://first-epss.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
