@@ -5,7 +5,6 @@
 import type { ContentBlock } from '@cyanheads/mcp-ts-core';
 import { serializationError } from '@cyanheads/mcp-ts-core/errors';
 import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
-import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { normalizeCve } from '../../services/epss/index.js';
 
 /** Maximum UTF-8 bytes for each JSON-serialized caller surface. */
@@ -17,17 +16,24 @@ export function serializedBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength;
 }
 
-/** Mirror the framework's generic notice enrichment trailer for ctx.enrich({notice}). */
+/**
+ * Mirror the framework's `ctx.enrich.notice` trailer: a blockquote quoting every
+ * line of the notice, `>` alone on an empty line. structuredContent carries the
+ * raw notice text.
+ */
 export function measuredSurfaces(
   domain: Record<string, unknown>,
   content: ContentBlock[],
   notice?: string,
 ) {
+  if (!notice) return { content, structuredContent: domain };
+  const quoted = notice
+    .split(/\r\n|\r|\n/)
+    .map((line) => (line === '' ? '>' : `> ${line}`))
+    .join('\n');
   return {
-    content: notice
-      ? [...content, { type: 'text', text: `\n\n**notice:** ${escapeMarkdownInline(notice)}` }]
-      : content,
-    structuredContent: notice ? { ...domain, notice } : domain,
+    content: [...content, { type: 'text', text: `\n\n${quoted}` }],
+    structuredContent: { ...domain, notice },
   };
 }
 
@@ -139,7 +145,7 @@ export function withBatchBudget<T extends AnyToolDefinition>(definition: T): T {
             'A single complete EPSS entry exceeds the response byte budget.',
           );
       }
-      if (fitted.notice) ctx.enrich({ notice: fitted.notice });
+      if (fitted.notice) ctx.enrich.notice(fitted.notice);
       return fitted.value;
     },
   };

@@ -1583,3 +1583,48 @@ describe('reference and failure consumption paths', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('notice trailer mirror', () => {
+  const markdown = new MarkdownIt('commonmark');
+  /** Assert the budget mirror reproduces the framework's emitted surfaces byte-for-byte. */
+  function expectMirrored(result: Result, definition: AnyToolDefinition, lines: string[]) {
+    expect(result.isError, text(result)).not.toBe(true);
+    const { notice, ...domain } = enriched(result);
+    expect(notice).toBe(lines.join('\n'));
+    const mirrored = measuredSurfaces(domain, definition.format!(domain), notice as string);
+    expect(mirrored.content).toEqual(result.content);
+    expect(mirrored.structuredContent).toEqual(result.structuredContent);
+    expect(serializedBytes(mirrored.content)).toBe(serializedBytes(result.content));
+    const trailer = result.content.at(-1);
+    expect(trailer?.type).toBe('text');
+    const tokens = markdown.parse(trailer?.type === 'text' ? trailer.text : '', {});
+    expect(tokens.map((token) => token.type)).toEqual([
+      'blockquote_open',
+      'paragraph_open',
+      'inline',
+      'paragraph_close',
+      'blockquote_close',
+    ]);
+    expect(tokens[2]?.content).toBe(lines.join('\n'));
+  }
+
+  it('mirrors a single-line notice', async () => {
+    const result = await runToolContract(epssGetScores, { cves: ['bad'] });
+    expectMirrored(result, epssGetScores, [
+      "No requested CVEs were returned by EPSS. Call epss_list_reference with topic='coverage' before interpreting the missing scores.",
+    ]);
+  });
+
+  it('mirrors a multi-line notice with every line quoted', async () => {
+    api = (url) => envelope(url, [row(cve(0), { date: '2026-10-17' })]);
+    const result = await runToolContract(epssQueryThreshold, { minEpss: 0, limit: 10001 });
+    const notice = enriched(result).notice as string;
+    const lines = notice.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('The current CSV header does not verify the returned score date.');
+    expect(lines[1]).toBe(
+      'Requested candidate limit 10001; applied limit 10000. Continue with the applied limit and nextOffset when available.',
+    );
+    expectMirrored(result, epssQueryThreshold, lines);
+  });
+});

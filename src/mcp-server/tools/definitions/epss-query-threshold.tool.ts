@@ -52,7 +52,7 @@ const filterShape = {
 /** Discover one candidate page; exact-year totals remain unknown. */
 export const epssQueryThreshold = tool('epss_query_threshold', {
   description:
-    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Examine one candidate page ordered by EPSS descending. Each serialized response surface fits 65536 UTF-8 bytes; budgetLimited and withheldCount disclose whole matches withheld, with nextOffset at the first withheld match. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, limit, returned score date and nextOffset.',
+    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Examine one candidate page in the upstream FIRST order, which is not ranked by EPSS, so the first page does not hold the highest scores. Each serialized response surface fits 65536 UTF-8 bytes; budgetLimited and withheldCount disclose whole matches withheld, with nextOffset at the first withheld match. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, limit, returned score date and nextOffset.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ...filterShape,
@@ -218,7 +218,7 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       if (!fitted.fits || (result.scores.length > 0 && count === 0))
         throw serializationError('A single complete EPSS entry exceeds the response byte budget.');
     }
-    if (fitted.notice) ctx.enrich({ notice: fitted.notice });
+    if (fitted.notice) ctx.enrich.notice(fitted.notice);
     return fitted.value;
   },
   format: formatThreshold,
