@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/first-epss-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/first-epss-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/first-epss-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/first-epss-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/first-epss-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/first-epss-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -41,6 +41,14 @@ Daily forecasts of observed CVE exploitation within the next 30 days from [FIRST
 | `epss_prioritize_cves` | Assign configurable remediation tiers using EPSS and caller-supplied CVSS severity |
 | `epss_list_reference` | Explain score interpretation, models, coverage, and prioritization conventions |
 
+### Skills
+
+| Skill | Description |
+|:---|:---|
+| `first-epss-guide` | Gates and workflows for the calling agent: when an NVD or KEV source must answer instead, where score dates and offsets come from, when paging is done, why discovery pages are not EPSS-ranked, and how to tell a model change from real score movement |
+
+Served over MCP as `skill://first-epss-guide/SKILL.md` and shipped in the npm package under `skills/`.
+
 ## Capability reference
 
 ### `epss_get_scores` <sub>tool</sub>
@@ -64,7 +72,7 @@ Daily forecasts of observed CVE exploitation within the next 30 days from [FIRST
 ### `epss_query_threshold` <sub>tool</sub>
 
 - Inclusive `minEpss` / `maxEpss` / `minPercentile` / `maxPercentile` bounds, `year`, and `addedWithinDays` intersect, with optional historical `date`; at least one filter and ordered bounds are required, otherwise `invalid_filter_combination`. `addedWithinDays` is dataset-addition recency and ignores `date`
-- One candidate page per call in EPSS descending order: positive safe-integer `limit` (default 100) plus `offset`. Limits above 10,000 are clamped to 10,000; the notice reports requested/applied values and both `filters.limit` and `pagination.limit` echo the applied limit. With `year`, `candidateTotal` counts broad candidates and `total` is `null` (`totalRelation: "unknown"`), so a filtered page can be empty with `hasMore: true`
+- One candidate page per call in FIRST's upstream order, which is not ranked by EPSS: to rank, narrow the bounds, page through every match, and sort locally. Positive safe-integer `limit` (default 100) plus `offset`. Limits above 10,000 are clamped to 10,000; the notice reports requested/applied values and both `filters.limit` and `pagination.limit` echo the applied limit. With `year`, `candidateTotal` counts broad candidates and `total` is `null` (`totalRelation: "unknown"`), so a filtered page can be empty with `hasMore: true`
 - Complete score rows fit within the 65,536-byte limit on each serialized response surface. When rows are withheld, `pagination.budgetLimited` is true and `withheldCount` counts inspected matches omitted; `examinedCount` still counts every inspected candidate. `nextOffset` resumes at the first withheld match's original candidate position, including with year filtering
 - Continue with the same filters and `limit`, `provenance.scoreDates[0]` as `date`, and `nextOffset` as `offset`
 
@@ -111,133 +119,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://first-epss.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect to the hosted instance, no install:
 
 ```sh
 claude mcp add --transport http first-epss-mcp-server https://first-epss.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
+Or run it locally:
 
-```json
-{
-  "mcpServers": {
-    "first-epss-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://first-epss.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add first-epss-mcp-server -- npx -y @cyanheads/first-epss-mcp-server
 ```
 
-For Cursor (`mcp.json`):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "first-epss-mcp-server": {
-      "url": "https://first-epss.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
-### Self-Hosted / Local
-
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "first-epss-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/first-epss-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-Or with npx (no Bun required):
-
-```json
-{
-  "mcpServers": {
-    "first-epss-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/first-epss-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
+      "args": ["-y", "@cyanheads/first-epss-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "first-epss-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/first-epss-mcp-server:latest"]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- Internet access to FIRST's public EPSS API; no API key or account is required.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/first-epss-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd first-epss-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# Optional: edit framework transport, auth, logging, and telemetry settings
-```
+FIRST's EPSS API is keyless; the server needs only internet access to it. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -249,9 +156,9 @@ No server-specific settings are required.
 | `MCP_HTTP_HOST` | HTTP bind address. | `127.0.0.1` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP MCP endpoint path. | `/mcp` |
-| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `auto`; `.env.example` and Docker select `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. The server declares `stateless` in code; an explicit value overrides it. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
-| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `debug`; client examples and Docker select `info` |
+| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `debug`; Docker selects `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<app-root>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
@@ -262,23 +169,43 @@ See [`.env.example`](./.env.example) for every server setting and the common fra
 
 ### Local development
 
-- **Build and run the production version**:
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
+- **Clone and install:**
+
+  ```sh
+  git clone https://github.com/cyanheads/first-epss-mcp-server.git
+  cd first-epss-mcp-server && bun install
+  cp .env.example .env   # optional: framework transport, auth, logging, telemetry
+  ```
+
+- **Build and run:**
 
   ```sh
   # One-time build
   bun run rebuild
 
   # Run the built server
-  bun run start:http
-  # or
   bun run start:stdio
+  # or
+  bun run start:http   # http://localhost:3010/mcp
   ```
 
-- **Run checks and tests**:
+- **Run checks and tests:**
+
   ```sh
-  bun run devcheck  # Lints, formats, type-checks, and more
-  bun run test      # Runs the test suite
+  bun run devcheck   # Lint, format, typecheck, security
+  bun run test       # Vitest test suite
+  bun run lint:mcp   # Validate MCP definitions against spec
   ```
+
+### Docker
+
+```sh
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/first-epss-mcp-server:latest
+```
+
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/first-epss-mcp-server`. To run it over stdio from an MCP client, use `"command": "docker"` with `"args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/first-epss-mcp-server:latest"]`. To build locally, `docker build -t first-epss-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -286,7 +213,7 @@ See [`.env.example`](./.env.example) for every server setting and the common fra
 |:---|:---|
 | `src/mcp-server/tools` | Five tool definitions, shared schemas, formatting, and history policy. |
 | `src/services/epss` | FIRST API requests, normalization, pacing, retries, and model metadata. |
-| `tests/` | Unit and integration tests mirroring the `src/` structure. |
+| `tests/` | Unit and integration tests mirroring `src/`, plus bundle-script tests under `tests/scripts/`. |
 
 ## Development guide
 

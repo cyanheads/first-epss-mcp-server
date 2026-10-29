@@ -4,7 +4,7 @@
 
 **Version:** 0.1.3
 
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.16`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
 
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 
@@ -12,7 +12,7 @@ Read `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` first for framework APIs, b
 
 ## Scope
 
-Five read-only tools expose FIRST EPSS scores, daily history, threshold discovery, prioritization with caller-supplied CVSS base severity, and static reference guidance. There are no resources, prompts, apps, or user-data stores. FIRST is keyless; no server-specific environment variables are required. Standard framework configuration selects stdio or Streamable HTTP and optional HTTP authentication.
+Five read-only tools expose FIRST EPSS scores, daily history, threshold discovery, prioritization with caller-supplied CVSS base severity, and static reference guidance. One published Agent Skill, `skills/first-epss-guide/SKILL.md`, is served as `skill://` resources via `createApp({ skills: 'skills' })`; there are no other resources, prompts, apps, or user-data stores. Every gate and identifier claim in the skill is verified against live behavior — re-check it when tool behavior changes. FIRST is keyless; no server-specific environment variables are required. Standard framework configuration selects stdio or Streamable HTTP and optional HTTP authentication.
 
 Package/install identity is `@cyanheads/first-epss-mcp-server`; registry identity is `io.github.cyanheads/first-epss-mcp-server`. Display/machine identity is `first-epss-mcp-server`, including `createApp()` name/title, plugin names, Docker, and the `.mcpb` filename.
 
@@ -27,7 +27,7 @@ Package/install identity is `@cyanheads/first-epss-mcp-server`; registry identit
 - **Preserve bounded work.** Scores/prioritization process 500 unique CVEs; history processes 50; the submission ceiling is 5,000 entries. Batch tools bound each serialized caller surface to 65,536 UTF-8 bytes, retaining whole entries and explicit full counts/preview completeness. Resume with the original submission, returned date, original severity/policy and `nextBatchOffset` as `batchOffset`; already-processed withheld entries differ from never-queried deferrals.
 - **Close the loop on issues.** Follow the authorized workflow's issue-update and closure steps, describing the concrete change for future readers.
 - **Candidate byte continuation.** All four dynamic tools bound each serialized caller surface to 65,536 UTF-8 bytes. Threshold discovery retains whole matches in upstream candidate order, discloses budget cuts with nested `budgetLimited`/`withheldCount`, and resumes at the first withheld match's exact upstream candidate position. Preserve the actual `examinedCount`; an empty year-filtered page advances across every inspected candidate. Candidate-position metadata stays internal.
-- **Literal accounting and completion.** Malformed identifiers render as Markdown-escaped JSON string literals to preserve embedded whitespace/control bytes; canonical CVEs stay plain. Measure the final escaped notice trailer. Exhausted batch/candidate offsets report completion; empty exact-year pages describe only that page. Threshold positive safe-integer limits above 10,000 clamp before the service call and disclose requested/applied values.
+- **Literal accounting and completion.** Malformed identifiers render as Markdown-escaped JSON string literals to preserve embedded whitespace/control bytes; canonical CVEs stay plain. Measure the final quoted notice trailer (`measuredSurfaces` mirrors the framework's `ctx.enrich.notice` blockquote byte-for-byte). Exhausted batch/candidate offsets report completion; empty exact-year pages describe only that page. Threshold positive safe-integer limits above 10,000 clamp before the service call and disclose requested/applied values.
 
 ## Patterns
 
@@ -45,7 +45,7 @@ All definitions are exported through `definitions/index.ts` and registered in `s
 
 ## Context and errors
 
-Handlers use `ctx.enrich({ notice })` for success caveats and `ctx.fail(reason)` for declared tool errors. The service threads `ctx.signal` through pacing, retries, body consumption, and model-header reads.
+Handlers use `ctx.enrich.notice(text)` for success caveats (a blockquote in `content[]`, the raw text in `structuredContent.notice`) and `ctx.fail(reason)` for declared tool errors. The service threads `ctx.signal` through pacing, retries, body consumption, and model-header reads.
 
 `upstream_shape` means invalid/inconsistent upstream data, never an ordinary missing CVE. `invalid_filter_combination` rejects absent/inverted query bounds; `conflicting_cvss` rejects duplicate CVEs with differing severity inputs. Preserve framework timeout, cancellation, rate-limit, and HTTP classifications while projecting only safe error fields. Never expose raw response bodies or causes.
 
@@ -57,11 +57,11 @@ The metadata cache holds public header data only. A failed metadata read can lea
 |:---|:---|
 | `src/index.ts` | Register five tools; initialize/dispose the service |
 | `src/mcp-server/tools/definitions/` | Tool definitions and public registration barrel |
-| `src/mcp-server/tools/{format,history,schemas}.ts` | Text output, exact-date policy, described schemas |
+| `src/mcp-server/tools/{format,history,response-budget,schemas}.ts` | Text output, exact-date policy, byte budgeting, described schemas |
 | `src/services/epss/epss-service.ts` | FIRST requests, pacing, retries, chunking, attribution |
 | `src/services/epss/model-header.ts` | Bounded CSV-header reader and public metadata cache |
 | `src/services/epss/{normalization,errors,types,index}.ts` | IDs/dates/models, safe errors, service contracts/barrel |
-| `tests/` | Tool, service, and integration tests |
+| `tests/` | Tool, service, integration, and bundle-script tests |
 
 ## Naming and imports
 
@@ -71,7 +71,7 @@ Exports and files carry concise JSDoc `@fileoverview` / `@module` documentation.
 
 ## Skills
 
-Run `bun run list-skills` for the current registry. Canonical development skills live in `framework-skills/`; agent copies live in `.claude/skills/` and `.agents/skills/`. They are contributor instructions, not installed plugin skills. After framework updates, follow `framework-skills/maintenance/SKILL.md` to sync them.
+Run `bun run list-skills` for the current registry. Canonical development skills live in `framework-skills/`; agent copies live in `.claude/skills/` and `.agents/skills/`. They are contributor instructions, not installed plugin skills. After framework updates, follow `framework-skills/maintenance/SKILL.md` to sync them. Root `skills/` is the separate, author-managed tree the server publishes to the agents that install it (`add-skill`); no sync creates or modifies it.
 
 Read the matching skill before adding tools/services/tests, field-testing, reviewing definition language, simplifying code, auditing security, polishing metadata, or releasing. A scoped sub-agent follows its assigned phase; it does not start an orchestration workflow.
 
@@ -104,9 +104,9 @@ Run raw `bun run devcheck`, `bun run rebuild`, and `bun run test` before handbac
 
 ## Bundling and metadata
 
-`manifest.json` defines the Node stdio MCPB launch. `.mcpbignore` excludes source, tests, scripts, coverage, and private material. `scripts/clean-mcpb.ts` prunes dev dependencies and dependency-shipped agent docs/native bindings after packing.
+`manifest.json` defines the Node stdio MCPB launch. `.mcpbignore` excludes source, tests, scripts, docs, coverage, plugin manifests, agent docs, and private material with root-anchored lines only (`/docs/`, never `docs/`); root `skills/` ships. `scripts/clean-mcpb.ts` prunes dev dependencies, package-root agent docs, native bindings, node-gyp output, and build-only framework files after packing; nested runtime `skills/` modules (the MCP SDK's `dist/ext/skills/`) stay, pinned by `tests/scripts/agent-doc-entry.test.ts`.
 
-Keep package, registry, MCPB, Claude/Codex plugins, Docker labels, and README consistent. A new user-supplied env variable must be wired through `server.json`, MCPB `user_config` / `mcp_config.env`, Claude `userConfig`, and Codex `env_vars`. An empty runtime env value replaces the user's value; it is not an optional-config hint.
+Keep package, registry, MCPB, Claude/Codex plugins, the Agent Plugins root pair (`plugin.json` + `mcp.json`), Docker labels, and README consistent. A new user-supplied env variable must be wired through `server.json`, MCPB `user_config` / `mcp_config.env`, Claude `userConfig`, and Codex `env_vars`. An empty runtime env value replaces the user's value; it is not an optional-config hint.
 
 ## Changelog
 

@@ -11,7 +11,9 @@ import { disposeEpssService, initEpssService } from './services/epss/index.js';
 await createApp({
   name: 'first-epss-mcp-server',
   title: 'first-epss-mcp-server',
+  sessionMode: 'stateless',
   tools: allToolDefinitions,
+  skills: 'skills',
   setup() {
     initEpssService();
   },
