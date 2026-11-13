@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: first-epss-mcp-server
+abstract: "Look up FIRST EPSS exploitation scores and daily history, find CVEs by score threshold, and prioritize CVEs with caller-supplied CVSS via MCP. STDIO or Streamable HTTP."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/first-epss-mcp-server"
+license: Apache-2.0
+doi: 10.5281/zenodo.24193682
+keywords:
+  - mcp
+  - model-context-protocol
+  - epss
+  - first
+  - cve
+  - cvss
+  - vulnerability
+  - vulnerability-management
+  - exploit-prediction
+  - security
