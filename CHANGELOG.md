@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-21 · ⚠️ Breaking
+
+Verify model versions for dated EPSS scores and explain conflicting CVSS inputs.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-28
 
 Publishes the first-epss-guide Agent Skill over MCP, moves to mcp-ts-core 0.13.18, renders notices as blockquotes, and stops claiming threshold pages are ranked by EPSS.
