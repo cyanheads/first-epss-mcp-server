@@ -39,6 +39,8 @@ const row = (id = cve(0), extra: Record<string, unknown> = {}) => ({
 });
 let calls: URL[];
 let api: (url: URL) => Response;
+let headerCalls: URL[];
+let metadata: (url: URL) => Response;
 function envelope(url: URL, data: unknown[], total = data.length) {
   return Response.json({
     status: 'OK',
@@ -107,6 +109,11 @@ beforeEach(() => {
   vi.setSystemTime(new Date(`${date}T15:00:00Z`));
   vi.spyOn(Date, 'now').mockImplementation(realNow);
   calls = [];
+  headerCalls = [];
+  metadata = (url) =>
+    url.pathname === '/epss_scores-current.csv.gz' || url.pathname === `/epss_scores-${date}.csv.gz`
+      ? new Response(`#model_version:v2026.06.15,score_date:${date}T12:00:00Z\n`)
+      : new Response(null, { status: 404 });
   api = (url) =>
     envelope(
       url,
@@ -119,10 +126,9 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (input: string | URL | Request) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
-      if (url.href === 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz') {
-        return new Response(
-          `#model_version:v2026.06.15,score_date:${date}T12:00:00Z\ncve,epss,percentile\n`,
-        );
+      if (url.origin === 'https://epss.empiricalsecurity.com') {
+        headerCalls.push(url);
+        return metadata(url);
       }
       if (url.origin !== 'https://api.first.org' || url.pathname !== '/data/v1/epss')
         throw new Error(`Unexpected URL ${url}`);
@@ -777,9 +783,13 @@ describe('threshold response byte budget', () => {
       expect(calls).toHaveLength(1);
     },
   );
-  it.each([false, true])(
-    'recovers every match across capped candidate re-slices (year filter=%s)',
-    async (withYear) => {
+  it.each([
+    { withYear: false, withRecency: false },
+    { withYear: true, withRecency: false },
+    { withYear: true, withRecency: true },
+  ])(
+    'recovers every match across capped candidate re-slices: %j',
+    async ({ withYear, withRecency }) => {
       const candidates = Array.from({ length: 4000 }, (_, i) =>
         row(`CVE-${withYear && i % 3 !== 1 ? 2025 : 2026}-${10000 + i}`, {
           epss: (4000 - i) / 4000,
@@ -799,10 +809,14 @@ describe('threshold response byte budget', () => {
       let offset = 0;
       let pages = 0;
       let pinnedDate: string | undefined;
+      const filters = {
+        minEpss: 0,
+        ...(withYear ? { year: 2026 } : {}),
+        ...(withRecency ? { addedWithinDays: 3 } : {}),
+      };
       for (; pages < 40; pages++) {
         const result = await runToolContract(epssQueryThreshold, {
-          minEpss: 0,
-          ...(withYear ? { year: 2026 } : {}),
+          ...filters,
           limit: 10001,
           offset,
           ...(pinnedDate ? { date: pinnedDate } : {}),
@@ -821,7 +835,7 @@ describe('threshold response byte budget', () => {
         for (const score of value.scores) scoreParity(score, text(result));
         provenanceParity(value.provenance, text(result));
         collected.push(...value.scores.map((score) => score.cve));
-        pinnedDate = value.provenance.scoreDates[0];
+        if (!withRecency) pinnedDate = value.provenance.scoreDates[0];
         if (!value.pagination.hasMore) {
           expect(value.pagination.nextOffset).toBeUndefined();
           break;
@@ -834,6 +848,11 @@ describe('threshold response byte budget', () => {
           nextOffset: expectedNext,
         });
         expect(expectedNext).toBeGreaterThan(offset);
+        if (withRecency) {
+          const guidance = `same filters, limit=10000 and offset=${expectedNext}; omit date`;
+          expect(enriched(result).notice).toContain(guidance);
+          expect(text(result)).toContain(guidance);
+        }
         offset = value.pagination.nextOffset!;
       }
       expect(pages).toBeGreaterThan(1);
@@ -842,14 +861,14 @@ describe('threshold response byte budget', () => {
       expect(new Set(collected).size).toBe(collected.length);
       expect(calls).toHaveLength(pages + 1);
       for (const call of calls.slice(1)) {
-        expect(call.searchParams.get('date')).toBe(date);
+        expect(call.searchParams.get('date')).toBe(withRecency ? null : date);
+        expect(call.searchParams.get('days')).toBe(withRecency ? '3' : null);
         expect(call.searchParams.get('limit')).toBe('10000');
         expect(call.searchParams.get('epss-gt')).toBe('0');
         expect(call.searchParams.get('q')).toBe(withYear ? '2026' : null);
       }
       const past = await runToolContract(epssQueryThreshold, {
-        minEpss: 0,
-        ...(withYear ? { year: 2026 } : {}),
+        ...filters,
         limit: 10000,
         offset: candidates.length + 1,
         date: pinnedDate,
@@ -862,6 +881,7 @@ describe('threshold response byte budget', () => {
         hasMore: false,
       });
       expect(value.pagination.nextOffset).toBeUndefined();
+      expect(text(past)).not.toContain('omit date to keep addedWithinDays active');
       expect(text(past)).toContain('No scored records.');
       expect(serializedBytes(past.content)).toBeLessThanOrEqual(65536);
       expect(serializedBytes(past.structuredContent)).toBeLessThanOrEqual(65536);
@@ -1085,12 +1105,13 @@ describe('inclusive prioritization policy', () => {
         ...(score === undefined ? {} : { cvssBaseScore: score }),
       })),
     });
-    errorParity(
-      result,
-      JsonRpcErrorCode.ValidationError,
-      'conflicting_cvss',
-      epssPrioritizeCves.errors![0]!.recovery,
-    );
+    errorParity(result, JsonRpcErrorCode.ValidationError, 'conflicting_cvss');
+    expect(text(result)).toContain(epssPrioritizeCves.errors![0]!.recovery);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        data: { conflicts: [{ cve: cve(0), values: scores.map((score) => score ?? null) }] },
+      },
+    });
     expect(calls).toEqual([]);
   });
   it('deduplicates identical zero severity and defers above its work cap', async () => {
@@ -1173,6 +1194,125 @@ describe('exact-date history policy', () => {
     expect(one.series[0]?.modelVersionSource).toBe('published_schedule');
     expect(text(implicit)).toContain('delta30d: 0.00001');
     scoreParity(one.series[0]!, text(implicit));
+  });
+  it('attributes dated history endpoints and exposes uncertain transition timing', async () => {
+    vi.setSystemTime(new Date('2026-11-21T15:00:00Z'));
+    const anchor = '2026-11-20';
+    const start = '2026-10-21';
+    const sevenDays = '2026-11-13';
+    const datedPath = (day: string) => `/epss_scores-${day}.csv.gz`;
+    api = (url) =>
+      envelope(url, [
+        row(cve(0), {
+          date: anchor,
+          'time-series': [row(cve(0), { date: start }), row(cve(0), { date: sevenDays })],
+        }),
+        row(cve(1), { date: anchor, 'time-series': [row(cve(1), { date: sevenDays })] }),
+      ]);
+    metadata = (url) => {
+      if (url.pathname === datedPath(start))
+        return new Response(`#model_version:v2026.06.15,score_date:${start}T12:00:00Z\n`);
+      if (url.pathname === datedPath(anchor))
+        return new Response(`#model_version:v2026.11.19,score_date:${anchor}T12:00:00Z\n`);
+      return new Response(null, { status: 404 });
+    };
+    const result = await runToolContract(epssGetTimeseries, {
+      cves: [cve(0), cve(1)],
+      date: anchor,
+    });
+    const value = success(result, epssGetTimeseries.output);
+    expect(value.provenance.modelMetadata).toEqual({
+      status: 'verified',
+      scoreDate: anchor,
+      sourceUrl: `https://epss.empiricalsecurity.com${datedPath(anchor)}`,
+      modelVersion: 'v2026.11.19',
+    });
+    expect(headerCalls.map((url) => url.pathname).sort()).toEqual([
+      datedPath(start),
+      datedPath(anchor),
+    ]);
+    expect(value.items[0]).toMatchObject({
+      series: [
+        { date: start, modelVersionSource: 'csv_header' },
+        { date: sevenDays, modelVersionSource: 'unavailable' },
+      ],
+      modelBoundariesCrossed: [],
+      modelBoundaryCoverageThrough: date,
+      modelBoundaryCoverageIncomplete: true,
+      modelBoundaryEvidence: {
+        earlierDate: start,
+        earlierVersion: 'v2026.06.15',
+        laterDate: anchor,
+        laterVersion: 'v2026.11.19',
+      },
+      deltaComparisons: [
+        { days: 7, crossesModelBoundary: false },
+        { days: 30, crossesModelBoundary: true },
+      ],
+    });
+    expect(value.items[1]).not.toHaveProperty('modelBoundaryEvidence');
+    expect(value.items[1]?.deltaComparisons).toMatchObject([
+      { days: 7, crossesModelBoundary: false },
+    ]);
+    expect(text(result)).toContain(
+      `Model version changed between ${start} (v2026.06.15) and ${anchor} (v2026.11.19)`,
+    );
+    expect(text(result)).toContain('Boundary coverage is incomplete');
+    provenanceParity(value.provenance, text(result));
+  });
+  it('keeps a possible rollback unknown when verified endpoints match across missing days', async () => {
+    vi.setSystemTime(new Date('2026-11-21T15:00:00Z'));
+    const anchor = '2026-11-20';
+    const earlier = '2026-11-13';
+    const rollback = '2026-11-17';
+    api = (url) =>
+      envelope(url, [
+        row(cve(0), { date: anchor, 'time-series': [row(cve(0), { date: earlier })] }),
+      ]);
+    metadata = (url) => {
+      const day = url.pathname.slice(13, 23);
+      const version = day === rollback ? 'v2026.11.17' : 'v2026.06.15';
+      return new Response(`#model_version:${version},score_date:${day}T12:00:00Z\n`);
+    };
+    const result = await runToolContract(epssGetTimeseries, { cves: [cve(0)], date: anchor });
+    const {
+      items: [item],
+    } = success(result, epssGetTimeseries.output);
+    expect(item).toMatchObject({
+      current: { modelVersion: 'v2026.06.15', modelVersionSource: 'csv_header' },
+      series: [{ date: earlier, modelVersion: 'v2026.06.15', modelVersionSource: 'csv_header' }],
+      modelBoundariesCrossed: [],
+      modelBoundaryCoverageIncomplete: true,
+      deltaComparisons: [{ days: 7, crossesModelBoundary: false }],
+    });
+    expect(item).not.toHaveProperty('modelBoundaryEvidence');
+    expect(headerCalls.map((url) => url.pathname.slice(13, 23)).sort()).toEqual([earlier, anchor]);
+    expect(text(result)).toContain('Boundary coverage is incomplete');
+    expect(text(result)).not.toContain('Model version changed between');
+  });
+  it('dates a change established by adjacent verified daily headers', async () => {
+    vi.setSystemTime(new Date('2026-11-21T15:00:00Z'));
+    const anchor = '2026-11-20';
+    const earlier = '2026-11-19';
+    api = (url) =>
+      envelope(url, [
+        row(cve(0), { date: anchor, 'time-series': [row(cve(0), { date: earlier })] }),
+      ]);
+    metadata = (url) => {
+      const day = url.pathname.slice(13, 23);
+      const version = day === anchor ? 'v2026.11.17' : 'v2026.06.15';
+      return new Response(`#model_version:${version},score_date:${day}T12:00:00Z\n`);
+    };
+    const result = await runToolContract(epssGetTimeseries, { cves: [cve(0)], date: anchor });
+    const {
+      items: [item],
+    } = success(result, epssGetTimeseries.output);
+    expect(item?.modelBoundariesCrossed).toEqual([
+      { date: anchor, fromModel: 'v2026.06.15', toModel: 'v2026.11.17' },
+    ]);
+    expect(item).not.toHaveProperty('modelBoundaryEvidence');
+    expect(item).not.toHaveProperty('modelBoundaryCoverageIncomplete');
+    expect(text(result)).toContain(`${anchor}: v2026.06.15 → v2026.11.17`);
   });
   it('retains nested observations, exact deltas, gaps, ties and a model transition', async () => {
     const anchor = '2026-06-15';
@@ -1296,6 +1436,57 @@ describe('exact-date history policy', () => {
 });
 
 describe('discovery candidate pagination', () => {
+  it.each([
+    { addedWithinDays: 1, date },
+    { addedWithinDays: 3, date: ` \u00a0${date} \t`, minEpss: 0, year: 2026 },
+  ])('rejects dated recency before I/O: %j', async (input) => {
+    const result = await runToolContract(epssQueryThreshold, input);
+    errorParity(
+      result,
+      JsonRpcErrorCode.ValidationError,
+      'invalid_filter_combination',
+      'Omit date to filter by addedWithinDays, or remove addedWithinDays and keep another qualifying filter to search a dated snapshot.',
+    );
+    expect(result.structuredContent).toMatchObject({ error: { data: { retryable: false } } });
+    expect(text(result)).toContain('not retryable');
+    expect(calls).toEqual([]);
+  });
+  it('continues undated recency through empty and populated exact-year pages', async () => {
+    const candidates = [row('CVE-2025-2021'), row('CVE-2021-1000'), row('CVE-2021-1001')];
+    api = (url) => {
+      const offset = Number(url.searchParams.get('offset'));
+      return envelope(url, candidates.slice(offset, offset + 1), candidates.length);
+    };
+    const filters = { addedWithinDays: 3, limit: 1, year: 2021 };
+    let offset = 0;
+    for (const [index, expected] of [[], ['CVE-2021-1000'], ['CVE-2021-1001']].entries()) {
+      const result = await runToolContract(epssQueryThreshold, { ...filters, offset });
+      const value = success(result, epssQueryThreshold.output);
+      expect(value.filters).toEqual({ ...filters, offset: index });
+      expect(value.scores.map((score) => score.cve)).toEqual(expected);
+      expect(value.provenance.scoreDates).toEqual([date]);
+      expect(value.pagination.nextOffset).toBe(index < 2 ? index + 1 : undefined);
+      if (index < 2) {
+        expect(enriched(result).notice).toContain('omit date');
+        expect(text(result)).toContain('omit date');
+        expect(text(result)).not.toContain(`date=${date}, offset=`);
+        offset = value.pagination.nextOffset!;
+      }
+    }
+    expect(calls.map((url) => url.searchParams.get('days'))).toEqual(['3', '3', '3']);
+    expect(calls.every((url) => !url.searchParams.has('date'))).toBe(true);
+  });
+  it('treats a whitespace-only date as latest for addition recency', async () => {
+    api = (url) => envelope(url, [row()]);
+    const result = await runToolContract(epssQueryThreshold, {
+      addedWithinDays: 3,
+      date: ' \u00a0 ',
+    });
+    expect(success(result, epssQueryThreshold.output).filters).not.toHaveProperty('date');
+    expect(calls[0]?.searchParams.get('days')).toBe('3');
+    expect(calls[0]?.searchParams.has('date')).toBe(false);
+    expect(text(result)).toContain('addedWithinDays: 3; date: latest available');
+  });
   it('continues after a zero-retained page and pins the second page date', async () => {
     api = (url) =>
       envelope(
@@ -1353,7 +1544,7 @@ describe('discovery candidate pagination', () => {
       `year: 2021; addedWithinDays: unset; date: ${date}; limit: 2; offset: 2`,
     );
   });
-  it('renders exact totals and equal inclusive bounds with independent addition recency', async () => {
+  it('renders exact totals and equal inclusive bounds with undated addition recency', async () => {
     api = (url) => envelope(url, [row()]);
     const result = await runToolContract(epssQueryThreshold, {
       minEpss: 0.1,
@@ -1361,7 +1552,6 @@ describe('discovery candidate pagination', () => {
       minPercentile: 0,
       maxPercentile: 1,
       addedWithinDays: 3,
-      date,
       limit: 1,
     });
     const value = success(result, epssQueryThreshold.output);
@@ -1381,7 +1571,6 @@ describe('discovery candidate pagination', () => {
       'percentile-gt': '0',
       'percentile-lt': '1',
       days: '3',
-      date,
       order: '!epss',
       limit: '1',
       offset: '0',
@@ -1390,7 +1579,7 @@ describe('discovery candidate pagination', () => {
       'minEpss: 0.1; maxEpss: 0.1; minPercentile: 0; maxPercentile: 1',
     );
     expect(text(result)).toContain(
-      `year: unset; addedWithinDays: 3; date: ${date}; limit: 1; offset: 0`,
+      'year: unset; addedWithinDays: 3; date: latest available; limit: 1; offset: 0',
     );
     scoreParity(value.scores[0]!, text(result));
   });
@@ -1450,6 +1639,78 @@ describe('discovery candidate pagination', () => {
 });
 
 describe('reference and failure consumption paths', () => {
+  it.each([epssGetScores, epssGetTimeseries, epssPrioritizeCves])(
+    'explains v1 omissions and preserves ordinary omissions for $name',
+    async (definition) => {
+      const old = 'CVE-2014-0160';
+      const scored = 'CVE-2021-41773';
+      const other = 'CVE-2017-0001';
+      const identifiers = [old, scored, other, 'BAD'];
+      const cves =
+        definition === epssPrioritizeCves
+          ? identifiers.map((cve) => ({ cve, cvssBaseScore: 6.5 }))
+          : identifiers;
+      api = (url) => {
+        const anchor = url.searchParams.get('date')!;
+        const requested = url.searchParams.get('cve')?.split(',');
+        return envelope(url, requested?.includes(scored) ? [row(scored, { date: anchor })] : []);
+      };
+      for (const anchor of ['2021-04-14', '2022-02-03', '2022-02-04']) {
+        const result = await runToolContract(definition, { cves, date: anchor });
+        expect(result.isError).not.toBe(true);
+        const unscored = enriched(result).unscoredCves as {
+          cve: string;
+          reason: string;
+          guidance: string;
+          cvssBaseScore?: number;
+        }[];
+        expect(unscored.map(({ cve, reason }) => ({ cve, reason }))).toEqual([
+          { cve: old, reason: 'not_returned' },
+          { cve: other, reason: 'not_returned' },
+          { cve: 'BAD', reason: 'invalid_format' },
+        ]);
+        if (anchor < '2022-02-04') {
+          expect(unscored[0]?.guidance).toContain('EPSS v1 scored only CVEs from 2017 onward');
+          expect(unscored[0]?.guidance).toContain('on or after 2022-02-04');
+        } else {
+          expect(unscored[0]?.guidance).not.toContain('EPSS v1');
+        }
+        expect(unscored[1]?.guidance).not.toContain('EPSS v1');
+        expect(unscored[2]?.guidance).not.toContain('EPSS v1');
+        for (const entry of unscored) {
+          expect(entry.guidance).toContain(definition.name);
+          expect(text(result)).toContain(entry.guidance);
+          if (definition === epssPrioritizeCves) {
+            expect(entry.cvssBaseScore).toBe(6.5);
+            expect(entry.guidance).toContain('cvssBaseScore');
+            expect(entry.guidance).toContain('likelihood');
+          }
+        }
+      }
+      const onlyOld = definition === epssPrioritizeCves ? [{ cve: old }] : [old];
+      const result = await runToolContract(definition, { cves: onlyOld, date: '2022-02-03' });
+      expect(enriched(result)).toMatchObject({
+        unscoredCves: [
+          { cve: old, reason: 'not_returned', guidance: expect.stringContaining('2022-02-04') },
+        ],
+      });
+      expect(text(result)).toContain('No requested CVEs were returned');
+      expect(text(result)).toContain('on or after 2022-02-04');
+    },
+  );
+  it('documents the historical coverage and recency continuation in the coverage reference', async () => {
+    const result = await runToolContract(epssListReference, { topic: 'coverage' });
+    const value = success(result, epssListReference.output);
+    const facts = value.topics[0]?.facts ?? [];
+    for (const phrase of [
+      'EPSS v1 scored only CVEs from 2017 onward',
+      'omit date for addedWithinDays',
+    ]) {
+      expect(facts.some((fact) => fact.includes(phrase))).toBe(true);
+      expect(text(result)).toContain(phrase);
+    }
+    expect(calls).toEqual([]);
+  });
   it('keeps invalid filters distinct from upstream shape and transport errors on both surfaces', async () => {
     const result = await runToolContract(epssQueryThreshold, { limit: 5 });
     expect(result.structuredContent).toMatchObject({
@@ -1622,9 +1883,7 @@ describe('notice trailer mirror', () => {
     const lines = notice.split('\n');
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('The current CSV header does not verify the returned score date.');
-    expect(lines[1]).toBe(
-      'Requested candidate limit 10001; applied limit 10000. Continue with the applied limit and nextOffset when available.',
-    );
+    expect(lines[1]).toBe('Requested candidate limit 10001; applied limit 10000.');
     expectMirrored(result, epssQueryThreshold, lines);
   });
 });

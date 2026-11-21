@@ -32,7 +32,7 @@ let domain: Domain;
 let calls: URL[];
 let headerCalls: number;
 let api: (url: URL, init?: RequestInit) => Response | Promise<Response>;
-let metadata: (init?: RequestInit) => Response | Promise<Response>;
+let metadata: (init: RequestInit | undefined, url: URL) => Response | Promise<Response>;
 function envelope(url: URL, data: unknown[], total = data.length): Response {
   return Response.json({
     status: 'OK',
@@ -69,11 +69,11 @@ beforeEach(async () => {
         return api(url, init);
       }
       if (
-        url.href === 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz' ||
-        url.href === `https://epss.empiricalsecurity.com/epss_scores-${date}.csv.gz`
+        url.origin === 'https://epss.empiricalsecurity.com' &&
+        /^\/epss_scores-(?:current|\d{4}-\d{2}-\d{2})\.csv\.gz$/.test(url.pathname)
       ) {
         headerCalls++;
-        return metadata(init);
+        return metadata(init, url);
       }
       throw new Error(`Unexpected URL: ${url.href}`);
     }),
@@ -371,34 +371,38 @@ describe('candidate paging', () => {
     expect(calls[1]?.searchParams.get('date')).toBe(date);
     expect(calls[1]?.searchParams.get('offset')).toBe('2');
   });
-  it('maps inclusive bounds and dataset days independently of historical date', async () => {
-    api = (url) => envelope(url, [row(undefined, { date: '2025-01-01' })]);
-    const result = await new domain.EpssService().queryThreshold(
-      {
-        minEpss: 0.1,
-        maxEpss: 0.1,
-        minPercentile: 0,
-        maxPercentile: 1,
-        addedWithinDays: 3,
-        date: '2025-01-01',
-        limit: 1,
-      },
-      createMockContext(),
-    );
-    expect(Object.fromEntries(calls[0]?.searchParams ?? [])).toEqual({
-      'epss-gt': '0.1',
-      'epss-lt': '0.1',
-      'percentile-gt': '0',
-      'percentile-lt': '1',
-      days: '3',
-      date: '2025-01-01',
-      order: '!epss',
-      limit: '1',
-      offset: '0',
-    });
-    expect(result.pagination).toMatchObject({ total: 1, totalRelation: 'exact', hasMore: false });
-    expect(result.provenance.modelMetadata.status).toBe('inferred');
-  });
+  it.each([{ addedWithinDays: 3 }, { date: '2025-01-01' }])(
+    'maps inclusive bounds with recency or a date: %j',
+    async (filter) => {
+      api = (url) => envelope(url, [row(undefined, { date: '2025-01-01' })]);
+      const result = await new domain.EpssService().queryThreshold(
+        {
+          minEpss: 0.1,
+          maxEpss: 0.1,
+          minPercentile: 0,
+          maxPercentile: 1,
+          ...filter,
+          limit: 1,
+        },
+        createMockContext(),
+      );
+      expect(Object.fromEntries(calls[0]?.searchParams ?? [])).toEqual({
+        'epss-gt': '0.1',
+        'epss-lt': '0.1',
+        'percentile-gt': '0',
+        'percentile-lt': '1',
+        ...(filter.addedWithinDays ? { days: '3' } : { date: '2025-01-01' }),
+        order: '!epss',
+        limit: '1',
+        offset: '0',
+      });
+      expect(result.pagination).toMatchObject({ total: 1, totalRelation: 'exact', hasMore: false });
+      expect(result.provenance.scoreDates).toEqual(['2025-01-01']);
+      expect(result.provenance.modelMetadata.status).toBe(
+        filter.addedWithinDays ? 'unavailable' : 'inferred',
+      );
+    },
+  );
   it.each([{}, { minEpss: 0.8, maxEpss: 0.2 }, { minPercentile: 0.8, maxPercentile: 0.2 }])(
     'rejects invalid combinations %j',
     async (input) => {
@@ -551,6 +555,59 @@ describe('transport failures and cancellation', () => {
 });
 
 describe('bounded model metadata', () => {
+  it('keeps scores usable when genuinely incomplete gzip metadata cannot verify them', async () => {
+    metadata = () => new Response(gzipSync(header).subarray(0, 10));
+    const result = await new domain.EpssService().getScores({ cves: ids(1) }, createMockContext());
+    expect(result.scores).toMatchObject([{ modelVersionSource: 'unavailable' }]);
+    expect(result.provenance.modelMetadata.status).toBe('unavailable');
+    expect(result.notices).toEqual([expect.stringContaining('could not be verified')]);
+  });
+  it.each([8192, 100000])(
+    'reads a valid gzip prefix with %i-byte transport chunks',
+    async (size) => {
+      const bytes = gzipSync(header + 'x'.repeat(96000), { level: 0 });
+      const cancel = vi.fn();
+      let offset = 0;
+      metadata = () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              const end = offset === 0 ? 1 : offset + size;
+              controller.enqueue(bytes.subarray(offset, end));
+              offset = end;
+              if (offset >= bytes.length) controller.close();
+            },
+            cancel,
+          }),
+        );
+      await expect(
+        new domain.ModelHeaderCache().get(createMockContext(), new AbortController().signal),
+      ).resolves.toEqual({ scoreDate: date, modelVersion: 'v2026.06.15' });
+      if (size < bytes.length) {
+        expect(offset).toBeLessThan(bytes.length);
+        expect(cancel).toHaveBeenCalled();
+      }
+    },
+  );
+  it('fails at the exact compressed limit before a stalled reader can delay it', async () => {
+    const bytes = new Uint8Array(65536).fill(65);
+    // A gzip member with a filename field that still has no terminator at the byte limit.
+    bytes.set([31, 139, 8, 8, 0, 0, 0, 0, 0, 255]);
+    const cancel = vi.fn();
+    metadata = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+          },
+          cancel,
+        }),
+      );
+    await expect(
+      new domain.ModelHeaderCache().get(createMockContext(), new AbortController().signal),
+    ).rejects.toThrow('Model-header compressed-byte budget exceeded.');
+    expect(cancel).toHaveBeenCalled();
+  });
   it('rejects a private DNS answer even when another resolver returns a public address', async () => {
     dns.lookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }]);
     dns.resolve4.mockResolvedValueOnce(['93.184.216.34']);
@@ -666,6 +723,50 @@ describe('bounded model metadata', () => {
     clockOffset = 900000;
     await expect(cache.get(ctx, signal)).resolves.toEqual(expected);
     expect(headerCalls).toBe(2);
+  });
+  it('coalesces dated entries independently and evicts the oldest verified header at capacity', async () => {
+    metadata = (_init, url) => new Response(header.replace(date, url.pathname.slice(13, 23)));
+    const cache = new domain.ModelHeaderCache();
+    const signal = new AbortController().signal;
+    const ctx = createMockContext();
+    const start = '2026-08-01';
+    const next = '2026-08-02';
+    const results = await Promise.all([
+      cache.get(ctx, signal, start),
+      cache.get(ctx, signal, next),
+      cache.get(ctx, signal, start),
+    ]);
+    expect(results.map((item) => item.scoreDate)).toEqual([start, next, start]);
+    expect(headerCalls).toBe(2);
+    for (let i = 2; i <= 65; i++) {
+      await cache.get(ctx, signal, domain.shiftDate(start, i));
+    }
+    expect(headerCalls).toBe(66);
+    await cache.get(ctx, signal, domain.shiftDate(start, 65));
+    expect(headerCalls).toBe(66);
+    await cache.get(ctx, signal, start);
+    expect(headerCalls).toBe(67);
+  });
+  it('keeps a mismatched dated header out of the cache and preserves eligible fallback', async () => {
+    const requested = '2026-10-17';
+    api = (url) => envelope(url, [row(undefined, { date: requested })]);
+    const service = new domain.EpssService();
+    const input = { cves: ids(1), date: requested };
+    const ctx = createMockContext();
+    const fallback = await service.getScores(input, ctx);
+    expect(fallback.scores).toMatchObject([
+      { date: requested, modelVersionSource: 'published_schedule' },
+    ]);
+    expect(fallback.provenance.modelMetadata.status).toBe('inferred');
+    expect(fallback.notices).toEqual([expect.stringContaining('does not verify')]);
+    metadata = () => new Response(header.replace(date, requested));
+    const verified = await service.getScores(input, ctx);
+    expect(verified.provenance.modelMetadata).toMatchObject({
+      status: 'verified',
+      sourceUrl: `https://epss.empiricalsecurity.com/epss_scores-${requested}.csv.gz`,
+    });
+    expect(headerCalls).toBe(2);
+    expect(verified.notices).toEqual([]);
   });
   it.each([
     '#model_version:v2026.06.15,score_date:2026-02-30\n',

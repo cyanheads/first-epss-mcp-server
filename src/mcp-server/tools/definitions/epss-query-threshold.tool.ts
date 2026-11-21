@@ -44,7 +44,7 @@ const filterShape = {
     .max(100000)
     .optional()
     .describe(
-      'Dataset-addition recency relative to upstream present, independent of historical date.',
+      'Dataset-addition recency relative to upstream present. Omit date, including on continuation pages.',
     ),
   date: dateSchema,
 };
@@ -52,7 +52,7 @@ const filterShape = {
 /** Discover one candidate page; exact-year totals remain unknown. */
 export const epssQueryThreshold = tool('epss_query_threshold', {
   description:
-    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Examine one candidate page in the upstream FIRST order, which is not ranked by EPSS, so the first page does not hold the highest scores. Each serialized response surface fits 65536 UTF-8 bytes; budgetLimited and withheldCount disclose whole matches withheld, with nextOffset at the first withheld match. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, limit, returned score date and nextOffset.',
+    'Discover CVEs using inclusive EPSS or percentile bounds, CVE year or dataset-addition recency; filters intersect and at least one is required. Omit date when using addedWithinDays. Examine one candidate page in the upstream FIRST order, which is not ranked by EPSS, so the first page does not hold the highest scores. Each serialized response surface fits 65536 UTF-8 bytes; budgetLimited and withheldCount disclose whole matches withheld, with nextOffset at the first withheld match. Year filtering can return an empty page with nextOffset; candidateTotal is a broad-query total, not an exact-year total. Continue with the same filters, applied limit and nextOffset. Use the returned score date except for recency queries, which stay undated and may shift as the live dataset changes.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ...filterShape,
@@ -132,7 +132,7 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       reason: 'invalid_filter_combination',
       code: JsonRpcErrorCode.ValidationError,
       thrownBy: 'service',
-      when: 'No qualifying filter is supplied or minimum exceeds maximum.',
+      when: 'No qualifying filter is supplied, minimum exceeds maximum, or addedWithinDays is combined with date.',
       retryable: false,
       recovery:
         "Call epss_list_reference with topic='coverage', then call epss_query_threshold with ordered bounds or a year/addition filter.",
@@ -172,9 +172,7 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
       ctx,
     );
     if (input.limit !== limit)
-      notices.push(
-        `Requested candidate limit ${input.limit}; applied limit ${limit}. Continue with the applied limit and nextOffset when available.`,
-      );
+      notices.push(`Requested candidate limit ${input.limit}; applied limit ${limit}.`);
     const assemble = (count: number) => {
       const limited = count < result.scores.length;
       const value = {
@@ -194,13 +192,20 @@ export const epssQueryThreshold = tool('epss_query_threshold', {
             : {}),
         },
       };
+      const { nextOffset } = value.pagination;
+      const scoreDate = value.provenance.scoreDates[0];
+      const continuation =
+        nextOffset === undefined
+          ? []
+          : [
+              value.filters.addedWithinDays === undefined
+                ? `Call epss_query_threshold with the same filters and limit, date=${scoreDate}, offset=${nextOffset}.`
+                : `Call epss_query_threshold with the same filters, limit=${limit} and offset=${nextOffset}; omit date to keep addedWithinDays active. The live dataset can change between pages.`,
+            ];
       const notice = [
         ...notices,
-        ...(limited
-          ? [
-              'Response byte budget reached. Matches were inspected but withheld; continue with nextOffset, the same filters and limit, and the returned score date.',
-            ]
-          : []),
+        ...(limited ? ['Response byte budget reached. Some inspected matches were withheld.'] : []),
+        ...continuation,
       ].join('\n');
       const surfaces = measuredSurfaces(value, formatThreshold(value), notice);
       return {
@@ -241,11 +246,6 @@ function formatThreshold(
         `offset: ${p.offset}; limit: ${p.limit}; examinedCount: ${p.examinedCount}; returnedCount: ${p.returnedCount}; candidateTotal: ${p.candidateTotal}; total: ${p.total === null ? 'null' : p.total}; totalRelation: ${p.totalRelation}; hasMore: ${p.hasMore}; nextOffset: ${p.nextOffset ?? 'none'}`,
         ...(p.budgetLimited !== undefined ? [`budgetLimited: ${p.budgetLimited}`] : []),
         ...(p.withheldCount !== undefined ? [`withheldCount: ${p.withheldCount}`] : []),
-        ...(p.hasMore
-          ? [
-              `Call epss_query_threshold with the same filters and limit, date=${result.provenance.scoreDates[0]}, offset=${p.nextOffset}.`,
-            ]
-          : []),
         provenanceText(result.provenance),
       ].join('\n\n'),
     },

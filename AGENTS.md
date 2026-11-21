@@ -4,9 +4,9 @@
 
 **Version:** 0.2.0
 
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
 
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 
 Read `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` first for framework APIs, builders, Context, errors, configuration, and exports. [docs/design.md](docs/design.md) records the server's domain contracts, decisions, and primary-source evidence.
 
@@ -26,7 +26,7 @@ Package/install identity is `@cyanheads/first-epss-mcp-server`; registry identit
 - **Preserve unknowns.** Missing EPSS is not zero risk; missing CVSS is not low severity. Probability and percentile are different metrics. Model changes alone do not establish new vulnerability evidence.
 - **Preserve bounded work.** Scores/prioritization process 500 unique CVEs; history processes 50; the submission ceiling is 5,000 entries. Batch tools bound each serialized caller surface to 65,536 UTF-8 bytes, retaining whole entries and explicit full counts/preview completeness. Resume with the original submission, returned date, original severity/policy and `nextBatchOffset` as `batchOffset`; already-processed withheld entries differ from never-queried deferrals.
 - **Close the loop on issues.** Follow the authorized workflow's issue-update and closure steps, describing the concrete change for future readers.
-- **Candidate byte continuation.** All four dynamic tools bound each serialized caller surface to 65,536 UTF-8 bytes. Threshold discovery retains whole matches in upstream candidate order, discloses budget cuts with nested `budgetLimited`/`withheldCount`, and resumes at the first withheld match's exact upstream candidate position. Preserve the actual `examinedCount`; an empty year-filtered page advances across every inspected candidate. Candidate-position metadata stays internal.
+- **Candidate byte continuation.** All four dynamic tools bound each serialized caller surface to 65,536 UTF-8 bytes. Threshold discovery retains whole matches in upstream candidate order, discloses budget cuts with nested `budgetLimited`/`withheldCount`, and resumes at the first withheld match's exact upstream candidate position. Preserve the actual `examinedCount`; an empty year-filtered page advances across every inspected candidate. Candidate-position metadata stays internal. Keep every recency page undated; other queries pin to the returned score date.
 - **Literal accounting and completion.** Malformed identifiers render as Markdown-escaped JSON string literals to preserve embedded whitespace/control bytes; canonical CVEs stay plain. Measure the final quoted notice trailer (`measuredSurfaces` mirrors the framework's `ctx.enrich.notice` blockquote byte-for-byte). Exhausted batch/candidate offsets report completion; empty exact-year pages describe only that page. Threshold positive safe-integer limits above 10,000 clamp before the service call and disclose requested/applied values.
 
 ## Patterns
@@ -47,7 +47,7 @@ All definitions are exported through `definitions/index.ts` and registered in `s
 
 Handlers use `ctx.enrich.notice(text)` for success caveats (a blockquote in `content[]`, the raw text in `structuredContent.notice`) and `ctx.fail(reason)` for declared tool errors. The service threads `ctx.signal` through pacing, retries, body consumption, and model-header reads.
 
-`upstream_shape` means invalid/inconsistent upstream data, never an ordinary missing CVE. `invalid_filter_combination` rejects absent/inverted query bounds; `conflicting_cvss` rejects duplicate CVEs with differing severity inputs. Preserve framework timeout, cancellation, rate-limit, and HTTP classifications while projecting only safe error fields. Never expose raw response bodies or causes.
+`upstream_shape` means invalid/inconsistent upstream data, never an ordinary missing CVE. `invalid_filter_combination` rejects absent/inverted query bounds or dated recency queries; `conflicting_cvss` rejects duplicate CVEs with differing severity inputs. Preserve framework timeout, cancellation, rate-limit, and HTTP classifications while projecting only safe error fields. Never expose raw response bodies or causes.
 
 The metadata cache holds public header data only. A failed metadata read can leave usable scores with a notice; caller cancellation and the whole-call deadline still fail the request.
 

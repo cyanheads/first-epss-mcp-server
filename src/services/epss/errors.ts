@@ -35,6 +35,7 @@ export function checkSignal(signal: AbortSignal): void {
 /** Keep only safe classification and retry accounting from framework errors. */
 export function safeError(error: unknown, endpoint: 'scores' | 'model_header'): McpError {
   const code = error instanceof McpError ? error.code : JsonRpcErrorCode.ServiceUnavailable;
+  const trusted = error instanceof McpError && trustedErrors.has(error);
   const data: Record<string, unknown> = { endpoint };
   if (error instanceof McpError) {
     for (const key of ['status', 'retryAttempts', 'deadlineMs', 'elapsedMs'])
@@ -87,11 +88,14 @@ export function safeError(error: unknown, endpoint: 'scores' | 'model_header'): 
       "Call epss_list_reference with topic='coverage', then call epss_query_threshold with ordered bounds or a year/addition filter.";
   if (data.reason === 'snapshot_unavailable')
     hint = 'Call the same tool with another date or omit date for latest available data.';
-  data.recovery = { hint };
+  const recovery = trusted ? error.data?.recovery : undefined;
+  const authoredHint =
+    recovery && typeof recovery === 'object' && 'hint' in recovery ? recovery.hint : undefined;
+  data.recovery = { hint: typeof authoredHint === 'string' ? authoredHint : hint };
   return trustedError(
     new McpError(
       code,
-      error instanceof McpError && trustedErrors.has(error)
+      trusted
         ? error.message
         : `FIRST EPSS ${endpoint === 'scores' ? 'score request' : 'model metadata request'} failed${typeof data.status === 'number' ? ` (HTTP ${data.status})` : ''}.`,
       data,

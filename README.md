@@ -56,6 +56,7 @@ Served over MCP as `skill://first-epss-guide/SKILL.md` and shipped in the npm pa
 - Up to 5,000 `cves` as an array or a whitespace/comma/semicolon-delimited string; case and Unicode dashes are normalized. Process up to 500 unique identifiers from `batchOffset` (default 0). Optional `date` (`2021-04-14` through today, UTC) selects a historical snapshot; omitted or blank means latest available
 - Each score carries `epss`, `percentile`, `date`, and `modelVersionSource` (`csv_header`, `published_schedule`, or `unavailable`), ordered by EPSS descending
 - `unscoredCves` separates `invalid_format` from `not_returned`; a missing score is unknown, never zero
+- EPSS v1 snapshots from `2021-04-14` through `2022-02-03` cover CVE IDs from 2017 onward. Score, history, and prioritization lookups suggest a v2 or later date when an older CVE is absent from v1
 - `snapshot_unavailable` identifies a dated snapshot FIRST cannot supply; select another date or omit it. A CVE omitted from a published snapshot remains `not_returned`
 
 ---
@@ -64,23 +65,24 @@ Served over MCP as `skill://first-epss-guide/SKILL.md` and shipped in the npm pa
 
 - Same `cves` / `date` / `batchOffset` inputs; process up to 50 unique identifiers per call
 - Each item pairs the anchor `current` with up to 30 preceding daily observations in `series`, plus `missingDates`, `peak`, and `delta7d` / `delta30d`, which need an exact calendar baseline and otherwise appear in `unavailableDeltas`
-- `modelBoundariesCrossed` and each comparison's `crossesModelBoundary` flag published model transitions; neither explains why a score moved
+- `modelBoundariesCrossed` lists dated transitions. `modelBoundaryEvidence` identifies an interval when verified endpoints differ and the transition date is unknown. Check `modelBoundaryCoverageIncomplete` before ruling out a change.
 - Derived deltas are rounded to nine decimals; original scores retain their precision. Re-anchor on `previousAnchorDate` for the preceding window without overlap; the pointer does not guarantee a published snapshot
 
 ---
 
 ### `epss_query_threshold` <sub>tool</sub>
 
-- Inclusive `minEpss` / `maxEpss` / `minPercentile` / `maxPercentile` bounds, `year`, and `addedWithinDays` intersect, with optional historical `date`; at least one filter and ordered bounds are required, otherwise `invalid_filter_combination`. `addedWithinDays` is dataset-addition recency and ignores `date`
+- Inclusive `minEpss` / `maxEpss` / `minPercentile` / `maxPercentile` bounds, `year`, and `addedWithinDays` intersect. At least one filter and ordered bounds are required. Combining live dataset-addition recency (`addedWithinDays`) with a historical `date` also returns `invalid_filter_combination`
 - One candidate page per call in FIRST's upstream order, which is not ranked by EPSS: to rank, narrow the bounds, page through every match, and sort locally. Positive safe-integer `limit` (default 100) plus `offset`. Limits above 10,000 are clamped to 10,000; the notice reports requested/applied values and both `filters.limit` and `pagination.limit` echo the applied limit. With `year`, `candidateTotal` counts broad candidates and `total` is `null` (`totalRelation: "unknown"`), so a filtered page can be empty with `hasMore: true`
 - Complete score rows fit within the 65,536-byte limit on each serialized response surface. When rows are withheld, `pagination.budgetLimited` is true and `withheldCount` counts inspected matches omitted; `examinedCount` still counts every inspected candidate. `nextOffset` resumes at the first withheld match's original candidate position, including with year filtering
-- Continue with the same filters and `limit`, `provenance.scoreDates[0]` as `date`, and `nextOffset` as `offset`
+- Continue with the same filters, applied `limit`, and `nextOffset` as `offset`. Use `provenance.scoreDates[0]` as `date` for ordinary queries. Omit `date` on every `addedWithinDays` page because its live candidate population can change
 
 ---
 
 ### `epss_prioritize_cves` <sub>tool</sub>
 
-- Up to 5,000 `{ cve, cvssBaseScore? }` entries (CVSS 0–10, caller-supplied) against latest or optional dated EPSS; process up to 500 unique CVEs from `batchOffset`. A duplicate CVE with differing CVSS, including missing versus supplied, fails as `conflicting_cvss`. Unavailable dated snapshots fail as `snapshot_unavailable`
+- Up to 5,000 `{ cve, cvssBaseScore? }` entries (CVSS 0–10, caller-supplied) against latest or optional dated EPSS, processing up to 500 unique CVEs from `batchOffset`. Unavailable dated snapshots fail as `snapshot_unavailable`
+- Conflicting severities anywhere in the submission fail as `conflicting_cvss` before score lookup. Both response surfaces list every conflicting CVE and distinct submitted severity, with `null` for an omitted score. Malformed IDs are identified by zero-based input row. When named details exceed 65,536 bytes, both surfaces give complete row groups, with one row per distinct severity
 - Defaults `severityThreshold: 7` and `likelihood: { metric: "epss", threshold: 0.10 }`, both inclusive; `metric: "percentile"` is an explicit alternative, and neither is FIRST guidance
 - Tiers are `act_now` (high severity, high likelihood), `scheduled` (high, low), `monitor` (low, high), and `defer` (low, low); missing CVSS lands in `epssOnly`, missing EPSS in `unscoredCves` with its CVSS kept
 
@@ -109,7 +111,7 @@ FIRST EPSS-specific:
 
 - Keyless lookup against FIRST's public API, with bounded batches rather than corpus synchronization
 - Shared API request pacing, transient-failure retries, cancellation, and a 45-second whole-call deadline
-- Model attribution from a matching daily CSV header or the verified published schedule for explicitly dated requests and preceding history; current-anchor verification failures remain visible
+- Model attribution verifies matching current or dated daily CSV headers. Explicitly dated requests and preceding history can fall back to the published schedule within its verified coverage.
 
 Agent-friendly output:
 
@@ -159,7 +161,7 @@ No server-specific settings are required.
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. The server declares `stateless` in code; an explicit value overrides it. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `debug`; Docker selects `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only). | `<app-root>/logs` |
+| `LOGS_DIR` | Directory for log files (Node.js only). Relative paths resolve from the installed server package. Set an absolute path to log elsewhere. | `<app-root>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
@@ -169,7 +171,7 @@ See [`.env.example`](./.env.example) for every server setting and the common fra
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 

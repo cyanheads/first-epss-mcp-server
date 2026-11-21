@@ -7,7 +7,7 @@ import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { createPacer, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { requestApi } from './api-request.js';
 import { checkSignal, safeError, localValidationError as validationError } from './errors.js';
-import { HEADER_URL, ModelHeaderCache } from './model-header.js';
+import { ModelHeaderCache, modelHeaderUrl } from './model-header.js';
 import {
   chunkCves,
   compareScores,
@@ -39,10 +39,11 @@ export const API_URL = 'https://api.first.org/data/v1/epss';
 export const MODEL_SCHEDULE_URL = 'https://www.first.org/epss/data';
 const missingGuidance =
   "Call epss_list_reference with topic='coverage' to interpret missing scores; retry epss_get_scores for a later score date.";
+const firstV2Date = MODEL_TRANSITIONS[1].date;
 const coverageNotice =
   "No requested CVEs were returned by EPSS. Call epss_list_reference with topic='coverage' before interpreting the missing scores.";
 const metadataRecovery =
-  "Call epss_list_reference with topic='models' for documented model publishing dates; retry epss_get_scores later for verified current metadata.";
+  "Call epss_list_reference with topic='models' for documented model publishing dates, or retry the same lookup later.";
 const pacer = createPacer({
   name: 'first_epss',
   minStartGapMs: 100,
@@ -50,7 +51,6 @@ const pacer = createPacer({
   maxQueueDepth: 100,
   cooldown: { baseMs: 1000, maxMs: 10000 },
 });
-const headers = new ModelHeaderCache();
 
 interface Envelope {
   data: unknown[];
@@ -84,6 +84,8 @@ function parseEnvelope(value: unknown, offset: number, limit: number): Envelope 
 
 /** Real transport seam: tests replace global fetch beneath framework timeout/status handling. */
 export class EpssService {
+  private headers = new ModelHeaderCache();
+
   /** Retrieve up to 500 canonical identifiers with explicit omissions and deferrals. */
   getScores(input: BatchInput, ctx: Context): Promise<ScoresResult> {
     return this.call(ctx, async (signal) => {
@@ -113,11 +115,18 @@ export class EpssService {
   /** Retrieve exactly one upstream candidate page and apply an exact local year filter. */
   queryThreshold(input: ThresholdInput, ctx: Context): Promise<ThresholdResult> {
     return this.call(ctx, async (signal) => {
-      const date = normalizeDate(input.date);
+      const { date: suppliedDate, ...otherFilters } = input;
+      const date = normalizeDate(suppliedDate);
+      if (date && input.addedWithinDays !== undefined)
+        throw validationError('addedWithinDays cannot be combined with date.', {
+          reason: 'invalid_filter_combination',
+          recovery: {
+            hint: 'Omit date to filter by addedWithinDays, or remove addedWithinDays and keep another qualifying filter to search a dated snapshot.',
+          },
+        });
       const limit = input.limit ?? 100;
       const offset = input.offset ?? 0;
-      const filters: ThresholdInput = { ...input, ...(date ? { date } : {}) };
-      if (!date) delete filters.date;
+      const filters: ThresholdInput = { ...otherFilters, ...(date ? { date } : {}) };
       const bounds = [
         ['minEpss', 'epss-gt'],
         ['maxEpss', 'epss-lt'],
@@ -200,7 +209,7 @@ export class EpssService {
         if (input.year !== undefined)
           notices.push(
             hasMore
-              ? 'No exact-year matches occurred in this candidate page. Call epss_query_threshold with the same filters, returned score date, and nextOffset.'
+              ? 'No exact-year matches occurred in this candidate page.'
               : `No exact-year matches occurred in this candidate page. Candidate pagination complete. The exact-year total remains unknown.${offset > 0 ? ' Use an earlier offset to inspect previous candidates.' : ''}`,
           );
         else if (envelope.total > 0)
@@ -356,7 +365,10 @@ export class EpssService {
           const entry = invalid.get(cve) ?? {
             cve,
             reason: 'not_returned' as const,
-            guidance: missingGuidance,
+            guidance:
+              pinnedDate && pinnedDate < firstV2Date && Number(cve.slice(4, 8)) < 2017
+                ? `EPSS v1 scored only CVEs from 2017 onward. Retry epss_get_scores with date on or after ${firstV2Date}.`
+                : missingGuidance,
           };
           return {
             ...entry,
@@ -395,19 +407,46 @@ export class EpssService {
   ): Promise<{ provenance: Provenance; notices: string[] }> {
     const scoreDates = [...new Set(anchorDates ?? scores.map((score) => score.date))].sort();
     const notices: string[] = [];
-    let header: HeaderMetadata | undefined;
-    let headerFailed = false;
-    if (scores.length) {
-      try {
-        header = await headers.get(ctx, signal);
-      } catch {
-        checkSignal(signal);
-        headerFailed = true;
-        notices.push(`Current model-header metadata could not be verified. ${metadataRecovery}`);
+    const anchorDate = scoreDates[0];
+    const earliest = scores.reduce<string | undefined>(
+      (first, score) =>
+        score.date !== anchorDate && (!first || score.date < first) ? score.date : first,
+      undefined,
+    );
+    const headers = new Map<string, HeaderMetadata>();
+    let anchorIssue: string | undefined;
+    if (anchorDate) {
+      const lookups = [{ expectedDate: anchorDate, date: requestedDate ? anchorDate : undefined }];
+      if (earliest) lookups.push({ expectedDate: earliest, date: earliest });
+      const results = await Promise.all(
+        lookups.map(async ({ expectedDate, date }) => {
+          const label = date ? `Dated CSV header for ${date}` : 'Current model-header metadata';
+          try {
+            const header = await this.headers.get(ctx, signal, date);
+            if (header.scoreDate === expectedDate) return { expectedDate, header };
+            return {
+              expectedDate,
+              issue: date
+                ? `The dated CSV header for ${date} does not verify the returned score date.`
+                : 'The current CSV header does not verify the returned score date.',
+            };
+          } catch {
+            checkSignal(signal);
+            return { expectedDate, issue: `${label} could not be verified.` };
+          }
+        }),
+      );
+      for (const { expectedDate, header, issue } of results) {
+        if (header) headers.set(expectedDate, header);
+        if (issue) {
+          notices.push(`${issue} ${metadataRecovery}`);
+          if (expectedDate === anchorDate) anchorIssue = issue;
+        }
       }
     }
     for (const score of scores) {
-      if (header?.scoreDate === score.date) {
+      const header = headers.get(score.date);
+      if (header) {
         score.modelVersion = header.modelVersion;
         score.modelVersionSource = 'csv_header';
       } else if (
@@ -421,18 +460,17 @@ export class EpssService {
         }
       }
     }
-    const anchorDate = scoreDates[0];
     const matching = anchorDate ? scores.find((score) => score.date === anchorDate) : undefined;
     let modelMetadata: ModelMetadata = {
       status: 'unavailable',
       explanation: scores.length
-        ? 'No matching verified current CSV header or eligible historical schedule attribution.'
+        ? 'No matching verified CSV header or eligible historical schedule attribution.'
         : 'No returned score dates to attribute.',
     };
     if (matching?.modelVersionSource === 'csv_header')
       modelMetadata = {
         status: 'verified',
-        sourceUrl: HEADER_URL,
+        sourceUrl: modelHeaderUrl(requestedDate ? matching.date : undefined),
         scoreDate: matching.date,
         ...(matching.modelVersion ? { modelVersion: matching.modelVersion } : {}),
       };
@@ -442,12 +480,8 @@ export class EpssService {
         sourceUrl: MODEL_SCHEDULE_URL,
         scoreDate: matching.date,
         ...(matching.modelVersion ? { modelVersion: matching.modelVersion } : {}),
-        explanation: `Inferred from the published schedule verified ${MODEL_SCHEDULE_VERIFIED_AT}; EPSS v1 has no claimed version string.${headerFailed ? ' Current CSV-header verification failed.' : ''}`,
+        explanation: `Inferred from the published schedule verified ${MODEL_SCHEDULE_VERIFIED_AT}; EPSS v1 has no claimed version string.${anchorIssue ? ` ${anchorIssue}` : ''}`,
       };
-    else if (scores.length && !headerFailed)
-      notices.push(
-        `The current CSV header does not verify the returned score date. ${metadataRecovery}`,
-      );
     return {
       provenance: {
         source: 'FIRST EPSS',

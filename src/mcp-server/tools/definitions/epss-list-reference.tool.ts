@@ -28,8 +28,9 @@ const reference = [
           `${m.date}: ${m.label}; model version ${'version' in m ? m.version : 'unavailable (original CSV had no version comment)'}.`,
       ),
       `Published schedule verified through ${MODEL_SCHEDULE_VERIFIED_AT}; no model is extrapolated after that date without a matching CSV header.`,
-      'The API version 1.0 describes the API protocol, not the scoring model. A stale, failed or mismatched current header cannot verify a returned score date.',
-      'Historical requests may infer a model from the publishing schedule; EPSS v1 has no invented modelVersion string. Header verification failures remain explicit caveats.',
+      'Implicit latest snapshots use the current CSV. Explicit dates and the earliest preceding observation in a history batch use dated CSVs. Only a header with a matching score date verifies a model.',
+      'Historical requests may infer a model from the published schedule within its coverage. EPSS v1 has no model version comment. Header verification failures remain explicit caveats.',
+      'Unequal verified history endpoints establish a change within the interval. Equal versions leave gaps uncertain, and a confirmed model change does not explain why a score moved.',
     ],
     sources: [
       'https://www.first.org/epss/data',
@@ -43,17 +44,19 @@ const reference = [
     facts: [
       'Identifiers use CVE-YYYY-NNNN with at least four trailing digits; case and surrounding whitespace are normalized. Dates are real YYYY-MM-DD UTC dates from 2021-04-14 through today; omitted dates mean latest available, not necessarily today.',
       'An omitted valid CVE in a published snapshot has unknown score, not zero risk; EPSS does not identify whether the CVE is reserved, rejected or nonexistent. Invalid formats are accounted for separately. A dated snapshot FIRST identifies as unavailable fails with snapshot_unavailable; choose another date or omit date.',
+      'EPSS v1 scored only CVEs from 2017 onward. For a pre-2017 CVE missing on a date between 2021-04-14 and 2022-02-03, retry on or after 2022-02-04, when v2 began publishing.',
       'Scores and prioritization process up to 500 unique CVEs per call; timeseries processes 50. Submission ceiling is 5000 entries. Each batch response surface is bounded to 65536 UTF-8 bytes, retaining whole entries. Resume with nextBatchOffset as batchOffset, the original cves, returned score date as date and original severity inputs and policy. Offsets count normalized unique identifiers in first-occurrence order, including invalid entries. deferredCves were not queried; withheldCves were processed but omitted. List completeness flags and full counts disclose previews.',
       'FIRST documents a public 1000-request/minute budget; batch supplied CVEs within the per-call limits rather than issuing individual requests.',
       'History contains the anchor plus up to 30 preceding daily observations. Missing history and gaps remain unknown. Deltas require the exact -7/-30 calendar date and are rounded to nine decimals. Re-anchor with previousAnchorDate for an earlier window; that snapshot may be unavailable.',
       'All four dynamic tools bound each JSON-serialized content array and structuredContent object to 65536 UTF-8 bytes, including notices and provenance. Threshold bounds are inclusive and intersect. At least one bound, year or addition filter is required. Pagination accepts positive safe-integer limits and clamps them to 10000 candidates per call, disclosing requested/applied limits. budgetLimited and withheldCount disclose complete matches omitted by the byte limit; examinedCount remains the count inspected. nextOffset resumes at the original candidate position of the first withheld match, otherwise after all inspected candidates.',
-      'Year matches the exact year in the CVE identifier. candidateTotal counts candidates before exact-year filtering; exact-year total remains null/unknown. Empty pages may still have nextOffset. Continue with identical filters, limit, returned score date and nextOffset.',
-      'addedWithinDays means recent addition to the EPSS dataset relative to upstream present; it is independent of historical date, CVE publication and score movement.',
+      'Year matches the exact year in the CVE identifier. candidateTotal counts candidates before exact-year filtering; exact-year total remains null/unknown. Empty pages may still have nextOffset. Continue with identical filters, the applied limit and nextOffset. Use the returned score date for ordinary queries and omit date for addedWithinDays, whose live candidate population can change between pages.',
+      'addedWithinDays measures recent addition to the live EPSS dataset. Combining it with date fails with invalid_filter_combination.',
     ],
     sources: [
       'https://api.first.org/epss/',
       'https://api.first.org/',
       'https://www.first.org/epss/data',
+      'https://www.first.org/epss/articles/estimating_old_cvss',
     ],
   },
   {

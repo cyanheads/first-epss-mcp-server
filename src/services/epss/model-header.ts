@@ -4,7 +4,6 @@
  */
 import { lookup, resolve4, resolve6 } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
@@ -15,6 +14,14 @@ import type { HeaderMetadata } from './types.js';
 
 /** FIRST's current public score-file header source. */
 export const HEADER_URL = 'https://epss.empiricalsecurity.com/epss_scores-current.csv.gz';
+const maxCachedHeaders = 64;
+const headerTtlMs = 900000;
+const redirectStatuses = [301, 302, 303, 307, 308];
+
+/** Public source for a validated score date, or the current file when omitted. */
+export function modelHeaderUrl(scoreDate?: string): string {
+  return scoreDate ? HEADER_URL.replace('current', scoreDate) : HEADER_URL;
+}
 const blocked = new BlockList();
 for (const [address, prefix] of [
   ['0.0.0.0', 8],
@@ -92,7 +99,84 @@ async function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal): Promi
   }
 }
 
-async function downloadHeader(ctx: Context, controller: AbortController): Promise<HeaderMetadata> {
+async function readFirstLine(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<string> {
+  async function* input(): AsyncGenerator<Uint8Array> {
+    let remaining = 65536;
+    while (true) {
+      checkSignal(signal);
+      const result = await waitForSignal(reader.read(), signal);
+      if (result.done) return;
+      for (let offset = 0; offset < result.value.length; ) {
+        const size = Math.min(1024, result.value.length - offset, remaining);
+        yield result.value.subarray(offset, offset + size);
+        offset += size;
+        remaining -= size;
+        if (!remaining) throw new Error('Model-header compressed-byte budget exceeded.');
+      }
+    }
+  }
+  const chunks = input();
+  let prefix = Buffer.alloc(0);
+  while (prefix.length < 2) {
+    const next = await chunks.next();
+    if (next.done) break;
+    prefix = Buffer.concat([prefix, next.value]);
+  }
+  if (!prefix.length) throw new Error('Empty model-header stream.');
+  const parts: Uint8Array[] = [];
+  let length = 0;
+  let complete = false;
+  let tooLong = false;
+  const collect = (chunk: Uint8Array) => {
+    if (complete || tooLong) return;
+    const newline = chunk.indexOf(10);
+    const line = newline >= 0 ? chunk.subarray(0, newline) : chunk;
+    length += line.length;
+    tooLong = length > 16384;
+    if (tooLong) return;
+    parts.push(line);
+    complete = newline >= 0;
+  };
+  const gunzip =
+    prefix[0] === 0x1f && prefix[1] === 0x8b ? createGunzip({ chunkSize: 1024 }) : undefined;
+  gunzip?.on('data', collect);
+  try {
+    let chunk: Uint8Array = prefix;
+    while (true) {
+      checkSignal(signal);
+      if (gunzip) {
+        // Wait for this input's output before allowing the next bounded slice into zlib.
+        await waitForSignal(
+          new Promise<void>((resolve, reject) => {
+            gunzip.once('error', reject);
+            gunzip.write(chunk, (error) => {
+              if (error) return; // The stream emits the error after the write callback.
+              gunzip.removeListener('error', reject);
+              resolve();
+            });
+          }),
+          signal,
+        );
+      } else collect(chunk);
+      if (tooLong) throw new Error('Model-header decompressed-byte budget exceeded.');
+      if (complete) return Buffer.concat(parts).toString('utf8');
+      const next = await chunks.next();
+      if (next.done) throw new Error('Model-header first line is incomplete.');
+      chunk = next.value;
+    }
+  } finally {
+    gunzip?.destroy();
+  }
+}
+
+async function downloadHeader(
+  sourceUrl: string,
+  ctx: Context,
+  controller: AbortController,
+): Promise<HeaderMetadata> {
   const signal = controller.signal;
   const deadline = Date.now() + 5000;
   const timer = setTimeout(
@@ -100,10 +184,8 @@ async function downloadHeader(ctx: Context, controller: AbortController): Promis
     5000,
   );
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  let source: Readable | undefined;
-  let gunzip: ReturnType<typeof createGunzip> | undefined;
   try {
-    let url = new URL(HEADER_URL);
+    let url = new URL(sourceUrl);
     let response: Response | undefined;
     for (let hop = 0; hop <= 5; hop++) {
       await publicHeaderUrl(url, signal);
@@ -113,14 +195,14 @@ async function downloadHeader(ctx: Context, controller: AbortController): Promis
           redirect: 'manual',
           errorBodyLimit: 0,
           errorHeaders: ['location'],
-          expectedStatuses: [301, 302, 303, 307, 308],
+          expectedStatuses: redirectStatuses,
         });
         break;
       } catch (error) {
         checkSignal(signal);
         if (
           !(error instanceof McpError) ||
-          ![301, 302, 303, 307, 308].includes(Number(error.data?.status)) ||
+          !redirectStatuses.includes(Number(error.data?.status)) ||
           hop === 5
         )
           throw error;
@@ -136,82 +218,23 @@ async function downloadHeader(ctx: Context, controller: AbortController): Promis
     }
     if (!response?.body) throw new Error('Missing model-header stream.');
     reader = response.body.getReader();
-    const ownedReader = reader;
-    let inputBytes = 0;
-    async function* input(): AsyncGenerator<Uint8Array> {
-      while (true) {
-        checkSignal(signal);
-        const result = await waitForSignal(ownedReader.read(), signal);
-        if (result.done) return;
-        inputBytes += result.value.byteLength;
-        if (inputBytes > 65536) throw new Error('Model-header compressed-byte budget exceeded.');
-        yield result.value;
-      }
-    }
-    const iterator = input();
-    const first = await iterator.next();
-    if (first.done) throw new Error('Empty model-header stream.');
-    let prefix = first.value;
-    while (prefix.length < 2) {
-      const next = await iterator.next();
-      if (next.done) break;
-      prefix = Buffer.concat([prefix, next.value]);
-    }
-    async function* prefixed(): AsyncGenerator<Uint8Array> {
-      yield prefix;
-      yield* iterator;
-    }
-    source = Readable.from(prefixed());
-    let output: AsyncIterable<Uint8Array> = source;
-    if (prefix[0] === 0x1f && prefix[1] === 0x8b) {
-      gunzip = createGunzip({ chunkSize: 1024 });
-      source.on('error', (error) => gunzip?.destroy(error));
-      source.pipe(gunzip);
-      output = gunzip;
-    }
-    const abort = () => {
-      source?.destroy();
-      gunzip?.destroy(new Error('Metadata read aborted.'));
-      void ownedReader.cancel().catch(() => {});
-    };
-    signal.addEventListener('abort', abort, { once: true });
-    try {
-      const parts: Buffer[] = [];
-      let outputBytes = 0;
-      for await (const chunk of output) {
-        checkSignal(signal);
-        const bytes = Buffer.from(chunk);
-        const newline = bytes.indexOf(10);
-        const line = newline >= 0 ? bytes.subarray(0, newline) : bytes;
-        outputBytes += line.length;
-        if (outputBytes > 16384) throw new Error('Model-header decompressed-byte budget exceeded.');
-        parts.push(line);
-        if (newline >= 0) {
-          const header = Buffer.concat(parts).toString('utf8');
-          const version = /(?:^|[#,\s])model_version\s*:\s*([^,\s]+)/.exec(header)?.[1];
-          const timestamp = /(?:^|[#,\s])score_date\s*:\s*([^,\s]+)/.exec(header)?.[1];
-          const date = timestamp?.slice(0, 10);
-          if (
-            !version ||
-            !/^v\d{4}\.\d{2}\.\d{2}$/.test(version) ||
-            !date ||
-            !isCalendarDate(date) ||
-            !timestamp ||
-            !Number.isFinite(Date.parse(timestamp))
-          )
-            throw new Error('Invalid model-header comment.');
-          return { scoreDate: date, modelVersion: version };
-        }
-      }
-      throw new Error('Model-header first line is incomplete.');
-    } finally {
-      signal.removeEventListener('abort', abort);
-    }
+    const header = await readFirstLine(reader, signal);
+    const version = /(?:^|[#,\s])model_version\s*:\s*([^,\s]+)/.exec(header)?.[1];
+    const timestamp = /(?:^|[#,\s])score_date\s*:\s*([^,\s]+)/.exec(header)?.[1];
+    const date = timestamp?.slice(0, 10);
+    if (
+      !version ||
+      !/^v\d{4}\.\d{2}\.\d{2}$/.test(version) ||
+      !date ||
+      !isCalendarDate(date) ||
+      !timestamp ||
+      !Number.isFinite(Date.parse(timestamp))
+    )
+      throw new Error('Invalid model-header comment.');
+    return { scoreDate: date, modelVersion: version };
   } finally {
     clearTimeout(timer);
     controller.abort();
-    gunzip?.destroy();
-    source?.destroy();
     if (reader) {
       void reader.cancel().catch(() => {});
       reader.releaseLock();
@@ -219,41 +242,50 @@ async function downloadHeader(ctx: Context, controller: AbortController): Promis
   }
 }
 
-/** One public cache entry and one shared bounded download. */
+/** Bounded public metadata cache that coalesces downloads by requested date. */
 export class ModelHeaderCache {
-  private cached: { value: HeaderMetadata; expires: number } | undefined;
-  private pending:
-    | { controller: AbortController; promise: Promise<HeaderMetadata>; waiters: number }
-    | undefined;
+  private cached = new Map<string, { value: HeaderMetadata; expires: number }>();
+  private pending = new Map<
+    string,
+    { controller: AbortController; promise: Promise<HeaderMetadata>; waiters: number }
+  >();
 
   /** Resolve metadata without allowing one waiter to cancel another's download. */
-  async get(ctx: Context, signal: AbortSignal): Promise<HeaderMetadata> {
+  async get(ctx: Context, signal: AbortSignal, scoreDate?: string): Promise<HeaderMetadata> {
     checkSignal(signal);
-    if (this.cached && this.cached.expires > Date.now()) return this.cached.value;
-    if (!this.pending) {
+    const url = modelHeaderUrl(scoreDate);
+    const cached = this.cached.get(url);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    this.cached.delete(url);
+    let entry = this.pending.get(url);
+    if (!entry) {
       const controller = new AbortController();
-      const entry = {
-        controller,
-        promise: Promise.resolve({ scoreDate: '', modelVersion: '' }),
-        waiters: 0,
-      };
-      entry.promise = downloadHeader(ctx, controller)
+      const promise = downloadHeader(url, ctx, controller)
         .then((value) => {
-          this.cached = { value, expires: Date.now() + 900000 };
+          if (
+            this.pending.get(url)?.controller === controller &&
+            (!scoreDate || value.scoreDate === scoreDate)
+          ) {
+            this.cached.set(url, { value, expires: Date.now() + headerTtlMs });
+            const oldest = this.cached.keys().next();
+            if (this.cached.size > maxCachedHeaders && !oldest.done)
+              this.cached.delete(oldest.value);
+          }
           return value;
         })
         .finally(() => {
-          if (this.pending === entry) this.pending = undefined;
+          if (this.pending.get(url)?.controller === controller) this.pending.delete(url);
         });
-      this.pending = entry;
+      entry = { controller, promise, waiters: 0 };
+      this.pending.set(url, entry);
     }
-    const entry = this.pending;
-    entry.waiters++;
-    return await waitForSignal(entry.promise, signal).finally(() => {
-      entry.waiters--;
-      if (!entry.waiters && this.pending === entry) {
-        this.pending = undefined;
-        entry.controller.abort();
+    const download = entry;
+    download.waiters++;
+    return await waitForSignal(download.promise, signal).finally(() => {
+      download.waiters--;
+      if (!download.waiters && this.pending.get(url) === download) {
+        this.pending.delete(url);
+        download.controller.abort();
       }
     });
   }

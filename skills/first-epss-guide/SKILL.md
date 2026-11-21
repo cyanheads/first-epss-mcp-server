@@ -4,7 +4,7 @@ description: Gates and workflows for the epss_* tools (FIRST EPSS). When EPSS an
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -30,22 +30,22 @@ EPSS is a likelihood forecast and nothing else. No epss_* tool retrieves CVSS (e
 **Before submitting a batch**
 
 1. **Collapse to unique CVEs first.** The 5,000-entry ceiling counts submitted entries, duplicates included, so per-host scanner rows can exceed it even when the unique set is small.
-2. **Give each CVE exactly one severity.** In epss_prioritize_cves, the same CVE with two CVSS values fails the whole call with `conflicting_cvss`, and so does the same CVE with and without one. Fill CVSS gaps before calling: CVEs without it land in `epssOnly` and need a second call.
+2. **Use one severity per CVE.** `epss_prioritize_cves` checks the entire submission for conflicting values, including a supplied score paired with an omitted one. Resolve each group in the `conflicting_cvss` recovery hint before resubmitting. `null` denotes an omitted score, and row positions are zero-based in the original `cves` array. Scored CVEs without caller severity land in `epssOnly`.
 3. **Don't ask for a date that hasn't been published.** That includes today's UTC date before FIRST publishes it, which fails with `snapshot_unavailable`; a date after today fails argument validation instead. Omit `date` to get the latest available day.
 
 **While paging**
 
 4. **A batch is done when `nextBatchOffset` is absent.** `deferredCount: 0` does not mean done. A near-full batch comes back `budgetLimited`, with already-processed entries withheld and a `nextBatchOffset` even though nothing was deferred. Take the continuation `date` from the first response's `provenance.scoreDates`, so a run that crosses FIRST's daily publish stays on one snapshot.
-5. **A year-filtered search is done only when `hasMore` is false.** `year` alone matches any identifier containing those digits, so the first pages can hold no matches at all. Add a score bound to shrink `candidateTotal`.
+5. **A year-filtered search is done when `hasMore` is false.** The first pages can have no exact-year matches because FIRST's candidate search also matches those digits elsewhere in the ID. When `nextOffset` is present, keep the filters and applied `limit`. Use the returned score date unless the query uses `addedWithinDays` (gate 9).
 6. **Keep `limit` at a few hundred.** A larger page is cut to fit the byte budget. `nextOffset` then points back at the first withheld row, so the next call fetches those rows again.
 
 **Before drawing a conclusion**
 
-7. **Treat a missing score as unknown, never zero.** Don't rank a missing score last or fill it with 0. `not_returned` on a historical `date` can simply mean the CVE had not entered the dataset yet, and the API holds no scores at all before 2022-02-04, though earlier dates are accepted. Check the CVE record in an NVD source before saying it doesn't exist.
+7. **Treat a missing score as unknown, never zero.** EPSS v1 snapshots from 2021-04-14 through 2022-02-03 cover CVE IDs from 2017 onward. If a pre-2017 CVE is `not_returned` on a v1 date, retry on or after 2022-02-04, when v2 began publishing. For other omissions, check the CVE record before drawing conclusions.
 8. **Discovery pages are not EPSS-ranked.** FIRST currently returns candidates in descending CVE-ID string order (CVE-2026-8037 before CVE-2026-39987) whatever ordering is requested, so the first page does not hold the top scorers. To rank, raise `minEpss` (or `minPercentile`) until `candidateTotal` is small enough to page through, collect every page, and sort locally.
-9. **Never combine `addedWithinDays` with `date`.** With a date, FIRST ignores an `addedWithinDays` of 2 or more, so the result is the entire dated snapshot (or everything meeting any score bound) and `candidateTotal` jumps toward the corpus size; with 1 it returns nothing. For "recently added", omit `date`.
-10. **Check score movement against model boundaries before calling it real.** If a `deltaComparisons` entry has `crossesModelBoundary: true`, find the step in `series`. A step dated exactly on a `modelBoundariesCrossed` date is the methodology change: at the EPSS v5 transition, unrelated CVEs all stepped on the same day. Read the percentile series as well. Percentile is a rank against all scored CVEs, and across a boundary it can barely move, or move against the probability.
-11. **After `modelBoundaryCoverageThrough`, the boundary list can't confirm anything.** Rows after that date carry `modelVersionSource: unavailable`, and a newer transition would not be listed. Before ruling out a model change, compare the anchor's verified `modelVersion` with the last inferred version in `series`.
+9. **Omit `date` on every `addedWithinDays` page.** The combination fails with `invalid_filter_combination`. Continue with the same filters, applied `limit`, and `nextOffset` as `offset`, including after a byte-limited or empty exact-year page. Candidates can shift between calls as the live dataset changes.
+10. **Check model boundaries before explaining score movement.** If `crossesModelBoundary` is true, use `modelBoundariesCrossed` for the exact transition date or `modelBoundaryEvidence` for the interval. A transition can affect scores. Check the percentile series too, since the score and the rank can move differently.
+11. **Check for incomplete boundary coverage.** `modelBoundaryCoverageThrough` dates the published schedule. Beyond it, verified headers can show a change between endpoints. Equal endpoint versions can hide an intervening change, so preserve the uncertainty when `modelBoundaryCoverageIncomplete` is present.
 12. **Compare `modelVersion` before comparing scores from two dates.** If the versions differ, the difference mixes model change with any real movement. Report it that way, not as a trend.
 
 ## Workflows

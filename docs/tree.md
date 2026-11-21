@@ -1,6 +1,6 @@
 # first-epss-mcp-server - Directory Structure
 
-Generated on: 2026-10-29 02:50:07
+Generated on: 2026-11-21 16:56:00
 
 ```text
 first-epss-mcp-server/
@@ -155,6 +155,7 @@ first-epss-mcp-server/
 │   │       │   └── index.ts
 │   │       ├── format.ts
 │   │       ├── history.ts
+│   │       ├── prioritization-conflicts.ts
 │   │       ├── response-budget.ts
 │   │       └── schemas.ts
 │   ├── services/
@@ -170,7 +171,8 @@ first-epss-mcp-server/
 ├── tests/
 │   ├── fuzz/
 │   ├── integration/
-│   │   └── epss-contract.int.test.ts
+│   │   ├── epss-contract.int.test.ts
+│   │   └── epss-priority-conflicts.int.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
@@ -194,6 +196,7 @@ first-epss-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

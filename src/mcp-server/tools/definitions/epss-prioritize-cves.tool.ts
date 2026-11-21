@@ -4,8 +4,9 @@
  */
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getEpssService, normalizeCve, type Score } from '../../../services/epss/index.js';
+import { getEpssService, type Score } from '../../../services/epss/index.js';
 import { accountingText, provenanceText, scoresText } from '../format.js';
+import { conflictRecovery, validateSeverities } from '../prioritization-conflicts.js';
 import { withBatchBudget } from '../response-budget.js';
 import {
   accountingShape,
@@ -126,10 +127,9 @@ export const epssPrioritizeCves = withBatchBudget(
       {
         reason: 'conflicting_cvss',
         code: JsonRpcErrorCode.ValidationError,
-        when: 'Duplicate canonical CVEs have different severity inputs, including missing versus supplied.',
+        when: 'Duplicate normalized CVE identifiers have different severity inputs, including missing versus supplied.',
         retryable: false,
-        recovery:
-          'Call epss_prioritize_cves again with one caller-supplied severity value per CVE.',
+        recovery: conflictRecovery,
       },
       {
         reason: 'snapshot_unavailable',
@@ -150,13 +150,7 @@ export const epssPrioritizeCves = withBatchBudget(
       },
     ],
     async handler(input, ctx) {
-      const severity = new Map<string, number | undefined>();
-      for (const entry of input.cves) {
-        const cve = normalizeCve(entry.cve);
-        if (severity.has(cve) && severity.get(cve) !== entry.cvssBaseScore)
-          throw ctx.fail('conflicting_cvss');
-        severity.set(cve, entry.cvssBaseScore);
-      }
+      const severity = validateSeverities(input.cves, ctx);
       const likelihood = input.likelihood ?? { metric: 'epss' as const, threshold: 0.1 };
       const { notices, scores, ...result } = await getEpssService().getScores(
         {
@@ -208,7 +202,7 @@ export const epssPrioritizeCves = withBatchBudget(
           const cvssBaseScore = severity.get(entry.cve);
           return {
             ...entry,
-            guidance: `${entry.reason === 'invalid_format' ? 'Supply a complete CVE-YYYY-NNNN identifier.' : "Call epss_list_reference with topic='coverage' to interpret missing scores."} Retry epss_prioritize_cves with the original cves entries, retaining cvssBaseScore when supplied and the same severityThreshold and likelihood policy.`,
+            guidance: `${entry.guidance.replace('epss_get_scores', 'epss_prioritize_cves')} Retain the original cves entries, cvssBaseScore when supplied, and the same severityThreshold and likelihood policy when retrying.`,
             ...(cvssBaseScore === undefined ? {} : { cvssBaseScore }),
           };
         }),

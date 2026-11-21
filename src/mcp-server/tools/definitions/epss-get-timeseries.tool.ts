@@ -82,7 +82,7 @@ export const epssGetTimeseries = withBatchBudget(
                       crossesModelBoundary: z
                         .boolean()
                         .describe(
-                          'A documented model transition falls after baseline through endpoint.',
+                          'The comparison contains a dated transition or an interval with differing verified endpoint versions. False means no change was established.',
                         ),
                     })
                     .describe('One exact-date comparison.'),
@@ -101,15 +101,34 @@ export const epssGetTimeseries = withBatchBudget(
                   z
                     .object({
                       date: z.string().describe('Model publishing transition date.'),
-                      fromModel: z.string().describe('Preceding model label.'),
-                      toModel: z.string().describe('New model label.'),
+                      fromModel: z.string().describe('Preceding model label or verified version.'),
+                      toModel: z.string().describe('New model label or verified version.'),
                     })
-                    .describe('Documented model publishing transition.'),
+                    .describe('Exact transition from the schedule or adjacent verified headers.'),
                 )
                 .describe('Transitions strictly after earliest observed date through anchor.'),
               modelBoundaryCoverageThrough: z
                 .string()
                 .describe('Last date the model schedule was verified.'),
+              modelBoundaryCoverageIncomplete: z
+                .literal(true)
+                .optional()
+                .describe(
+                  'Part of the observed interval lacks day-by-day model boundary coverage.',
+                ),
+              modelBoundaryEvidence: z
+                .object({
+                  earlierDate: z.string().describe('Earlier date with a verified CSV header.'),
+                  earlierVersion: z
+                    .string()
+                    .describe('Model version verified on the earlier date.'),
+                  laterDate: z.string().describe('Later date with a verified CSV header.'),
+                  laterVersion: z.string().describe('Model version verified on the later date.'),
+                })
+                .optional()
+                .describe(
+                  'Endpoints verify a model change within the interval without establishing its exact timing.',
+                ),
             })
             .describe('One anchor and its derived history.'),
         )
@@ -180,6 +199,16 @@ export const epssGetTimeseries = withBatchBudget(
                 ...item.modelBoundariesCrossed.map(
                   (b) => `- ${b.date}: ${b.fromModel} → ${b.toModel}`,
                 ),
+                ...(item.modelBoundaryEvidence
+                  ? [
+                      `Model version changed between ${item.modelBoundaryEvidence.earlierDate} (${item.modelBoundaryEvidence.earlierVersion}) and ${item.modelBoundaryEvidence.laterDate} (${item.modelBoundaryEvidence.laterVersion}). The headers do not establish the transition date.`,
+                    ]
+                  : []),
+                ...(item.modelBoundaryCoverageIncomplete
+                  ? [
+                      'Boundary coverage is incomplete for this observed interval. A comparison with no established change may still cross one.',
+                    ]
+                  : []),
                 `Model boundary coverage through: ${item.modelBoundaryCoverageThrough}. A boundary does not establish why a score changed.`,
               ].join('\n'),
             ),

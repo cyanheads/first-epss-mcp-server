@@ -41,8 +41,12 @@ describe('safe error projection', () => {
     expect(projected.data).toMatchObject({ reason: 'upstream_shape', retryable: false });
   });
   it('does not trust arbitrary errors claiming a local reason', () => {
-    const projected = safeError(validationError('private', { reason: 'upstream_shape' }), 'scores');
+    const projected = safeError(
+      validationError('private', { reason: 'upstream_shape', recovery: { hint: 'private hint' } }),
+      'scores',
+    );
     expect(projected.message).not.toContain('private');
+    expect(JSON.stringify(projected.data?.recovery)).not.toContain('private hint');
   });
   it('names HTTP status without upstream text', () => {
     expect(
