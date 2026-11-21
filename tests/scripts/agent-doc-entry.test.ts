@@ -3,30 +3,9 @@
  * package-root agent trees are stripped, nested runtime `skills/` modules are kept.
  * @module tests/scripts/agent-doc-entry.test
  */
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-
-interface CleanMcpb {
-  AGENT_DOC_ENTRY: RegExp;
-  filterAgentDocEntries(entries: string[]): string[];
-}
-interface LintPackaging {
-  AGENT_DOC_ENTRY: RegExp;
-  checkBundleEntries(entries: string[], bundleLabel: string): string[];
-}
-
-/**
- * Loaded by URL at run time so neither script joins the typecheck program:
- * `lint-packaging.ts` carries a repository-only fallback import that a consumer
- * `tsc` cannot resolve.
- */
-async function loadScript<T>(name: string): Promise<T> {
-  return (await import(pathToFileURL(resolve('scripts', name)).href)) as T;
-}
-
-const cleaner = await loadScript<CleanMcpb>('clean-mcpb.ts');
-const packaging = await loadScript<LintPackaging>('lint-packaging.ts');
+import * as cleaner from '../../scripts/clean-mcpb.js';
+import * as packaging from '../../scripts/lint-packaging.js';
 
 /** Runtime modules the MCP SDK imports at startup, plus nested and root-level lookalikes. */
 const retained = [
@@ -52,6 +31,8 @@ const stripped = [
   'node_modules/@scope/pkg/.agents/skills/guide/notes.md',
   'node_modules/outer/node_modules/@scope/inner/skills/guide/notes.md',
   'node_modules/outer/node_modules/inner/.claude/skills/guide/notes.md',
+  'node_modules/@cyanheads/mcp-ts-core/AGENTS.md',
+  'node_modules/outer/node_modules/@scope/inner/CLAUDE.md',
   'node_modules/some-pkg/docs/SKILL.md',
 ];
 
